@@ -1,0 +1,1000 @@
+---
+title: "epi_size"
+author: 
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+#Load Packages
+```{r}
+library(librarian)
+shelf(dplyr)
+shelf(ggplot2)
+shelf(scales)
+shelf(viridis)
+shelf(broom)
+shelf(ggeffects)
+shelf(ggplot2)
+shelf(RColorBrewer)
+```
+
+#Load Data
+```{r}
+kpp_data <- read.csv("data/raw/kpp_data.csv", stringsAsFactors = FALSE)
+```
+
+
+#Make Temporary Data Frame
+```{r}
+pairwise_tmp <- pairwise_df_with_periods %>%
+  mutate(
+    serotype = toupper(serotype),    
+    year1    = as.integer(year1),
+    year2    = as.integer(year2)
+  )
+
+cases_tmp <- kpp_data %>%
+  filter(!is.na(DENV.PCR), !is.na(study.year)) %>%
+  mutate(
+    serotype = toupper(DENV.PCR),
+    serotype = ifelse(grepl("^DEN[1-4]$", serotype),
+                      sub("^DEN([1-4])$", "DENV\\1", serotype),
+                      serotype),
+    year = as.integer(study.year)
+  ) %>%
+  count(serotype, year, name = "cases")
+
+print(cases_tmp)
+
+```
+
+#Plotting Frame
+```{r}
+yearly_summary <- pairwise_tmp %>%
+  filter(!is.na(same_chain), year1 == year2) %>%
+  group_by(serotype, year = year1) %>%
+  summarize(
+    prop_same_chain = mean(same_chain, na.rm = TRUE),
+    n_pairs         = n(),
+    .groups = "drop"
+  ) %>%
+  left_join(cases_tmp, by = c("serotype", "year")) 
+
+
+head(yearly_summary)
+```
+
+
+```{r}
+ggplot(yearly_summary,
+       aes(x     = year,
+           y     = prop_same_chain,
+           size  = cases,
+           color = serotype,
+           group = serotype)) +
+  
+  geom_line(size = 0.8) +
+  geom_point(shape = 16, alpha = 0.8) +
+  
+  scale_x_continuous(
+    "Year",
+    breaks = seq(min(yearly_summary$year),
+                 max(yearly_summary$year),
+                 by = 2),
+    expand = expansion(add = c(0.5, 0.5))
+  ) +
+  
+  scale_y_continuous(
+    "Proportion Same-Chain Pairs",
+    labels = scales::number_format(accuracy = 0.01),
+    breaks = scales::pretty_breaks(n = 5),
+    expand = expansion(mult = c(0, 0.05))
+  ) +
+  
+  scale_size_area(
+    "Cases",
+    max_size = 10,
+    breaks   = pretty(yearly_summary$cases, n = 4)
+  ) +
+  
+  scale_color_brewer(
+    "Serotype",
+    palette = "Set1"
+  ) +
+  guides(
+    color = guide_legend(order = 1),
+    size  = guide_legend(order = 2, title.position = "top")
+  ) +
+  
+  theme_classic(base_size = 14) +
+  theme(
+    panel.grid        = element_blank(),
+    axis.text         = element_text(color = "black", size = 10),
+    axis.title        = element_text(face = "bold"),
+    legend.position   = "bottom",
+    legend.box        = "vertical",
+    legend.title.align= 0.5,
+    plot.title        = element_text(face = "bold", hjust = 0.5),
+    plot.margin       = margin(5, 5, 5, 5)
+  ) +
+  
+  labs(
+    title    = "Same-Chain Proportion vs. Epidemic Size by Serotype",
+  )
+```
+
+
+###TEST MATHEMATICALLY 
+
+#Makes a dataframe 
+```{r}
+glm_df <- yearly_summary %>%
+  mutate(
+    successes = round(prop_same_chain * n_pairs),  
+    failures  = n_pairs - successes,
+    log_cases = log(cases)                        
+  )
+```
+
+#Run Spearman's Test 
+```{r}
+spearman_results <- glm_df %>%
+  group_by(serotype) %>%
+  filter(n() >= 3) %>%
+  summarize(
+    rho = cor(log_cases, prop_same_chain, method = "spearman"),
+    p   = cor.test(log_cases, prop_same_chain, method = "spearman")$p.value,
+    .groups="drop"
+  )
+
+print(spearman_results)
+```
+
+#Run a Quasi-Binomial 
+```{r}
+glm_results <- glm_df %>%
+  group_by(serotype) %>%
+  filter(n() >= 3) %>% 
+  do({
+    fit <- glm(
+      cbind(successes, failures) ~ log_cases,
+      data   = .,
+      family = quasibinomial()
+    )
+    tidy(fit, conf.int = TRUE)
+  })
+
+print(glm_results)
+
+glm_results_subset <- glm_results %>%
+  filter(term == "log_cases") %>%
+  dplyr::select(
+    serotype, estimate, std.error, statistic, p.value, conf.low, conf.high
+  )
+
+print(glm_results_subset)
+```
+
+
+#Plot GLM Fit 
+```{r}
+glm_preds <- glm_df %>%
+  group_by(serotype) %>%
+  filter(n() >= 3) %>%
+  nest() %>%
+  mutate(
+    fit = purrr::map(data, ~ glm(cbind(successes, failures) ~ log_cases, data = ., family = quasibinomial())),
+    preds = purrr::map2(fit, data, ~ broom::augment(.x, newdata = .y, type.predict = "response"))
+  ) %>%
+  unnest(preds) %>%
+  ungroup()
+
+
+ggplot(glm_preds, aes(x = log_cases, y = prop_same_chain)) +
+  geom_point(aes(size = n_pairs), alpha = 0.6) +           
+  geom_line(aes(y = .fitted), color = "red", size = 1.2) + 
+  facet_wrap(~serotype) +                                 
+  labs(
+    x = "log(Number of Cases)",
+    y = "Proportion Same Chain",
+    title = "Observed and Fitted Proportion Same Chain vs Epidemic Size by Serotype"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+```{r}
+ggplot(yearly_summary, aes(x = year, y = cases, fill = serotype)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~serotype, scales = "free_y") +
+  labs(
+    title = "Cases Per Year by Serotype",
+    x = "Year",
+    y = "Number of Cases"
+  ) +
+  theme_minimal()
+```
+#Combined All Serotype Data 
+
+```{r}
+ggplot(yearly_summary,
+       aes(x = year,
+           y = prop_same_chain,
+           size = cases)) +  # no color or group
+
+  geom_line(size = 0.8, color = "darkblue") +
+  geom_point(shape = 16, alpha = 0.8, color = "darkblue") +
+
+  scale_x_continuous(
+    "Year",
+    breaks = seq(min(yearly_summary$year),
+                 max(yearly_summary$year),
+                 by = 2),
+    expand = expansion(add = c(0.5, 0.5))
+  ) +
+
+  scale_y_continuous(
+    "Proportion Same-Chain Pairs",
+    labels = scales::number_format(accuracy = 0.01),
+    breaks = scales::pretty_breaks(n = 5),
+    expand = expansion(mult = c(0, 0.05))
+  ) +
+
+  scale_size_area(
+    "Cases",
+    max_size = 10,
+    breaks = pretty(yearly_summary$cases, n = 4)
+  ) +
+
+  # Remove color scale, keep only size
+  guides(
+    size = guide_legend(order = 1, title.position = "top")
+  ) +
+
+  theme_classic(base_size = 14) +
+  theme(
+    panel.grid = element_blank(),
+    axis.text = element_text(color = "black", size = 10),
+    axis.title = element_text(face = "bold"),
+    legend.position = "bottom",
+    legend.box = "vertical",
+    legend.title.align = 0.5,
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    plot.margin = margin(5, 5, 5, 5)
+  ) +
+
+  labs(
+    title = "Same-Chain Proportion by Epidemic Size",
+  )
+
+```
+
+#All serotype Data Mapped
+```{r}
+ggplot(yearly_summary,
+       aes(x = year,
+           y = prop_same_chain,
+           size = cases)) + 
+  geom_point(shape = 16, alpha = 0.8, color = "darkblue") +
+
+  scale_x_continuous(
+    "Year",
+    breaks = seq(min(yearly_summary$year),
+                 max(yearly_summary$year),
+                 by = 2),
+    expand = expansion(add = c(0.5, 0.5))
+  ) +
+
+  scale_y_continuous(
+    "Proportion Same-Chain Pairs",
+    labels = scales::number_format(accuracy = 0.01),
+    breaks = scales::pretty_breaks(n = 5),
+    expand = expansion(mult = c(0, 0.05))
+  ) +
+
+  scale_size_area(
+    "Cases",
+    max_size = 10,
+    breaks = pretty(yearly_summary$cases, n = 4)
+  ) +
+
+  # Remove color scale, keep only size
+  guides(
+    size = guide_legend(order = 1, title.position = "top")
+  ) +
+
+  theme_classic(base_size = 14) +
+  theme(
+    panel.grid = element_blank(),
+    axis.text = element_text(color = "black", size = 10),
+    axis.title = element_text(face = "bold"),
+    legend.position = "bottom",
+    legend.box = "vertical",
+    legend.title.align = 0.5,
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    plot.margin = margin(5, 5, 5, 5)
+  ) +
+
+  labs(
+    title = "Same-Chain Proportion by Epidemic Size",
+  )
+```
+
+#Under 5 cases excluded 
+```{r}
+yearly_summary %>%
+  filter(cases >= 5) %>%
+  ggplot(aes(x = year,
+             y = prop_same_chain,
+             size = cases)) + 
+    geom_point(shape = 16, alpha = 0.8, color = "darkblue") +
+  
+    scale_x_continuous(
+      "Year",
+      breaks = seq(min(yearly_summary$year),
+                   max(yearly_summary$year),
+                   by = 2),
+      expand = expansion(add = c(0.5, 0.5))
+    ) +
+  
+    scale_y_continuous(
+      "Proportion Same-Chain Pairs",
+      labels = scales::number_format(accuracy = 0.01),
+      breaks = scales::pretty_breaks(n = 5),
+      expand = expansion(mult = c(0, 0.05))
+    ) +
+  
+    scale_size_area(
+      "Cases",
+      max_size = 10,
+      breaks = pretty(yearly_summary$cases, n = 4)
+    ) +
+  
+    # Keep only size legend
+    guides(
+      size = guide_legend(order = 1, title.position = "top")
+    ) +
+  
+    theme_classic(base_size = 14) +
+    theme(
+      panel.grid   = element_blank(),
+      axis.text    = element_text(color = "black", size = 10),
+      axis.title   = element_text(face = "bold"),
+      legend.position    = "bottom",
+      legend.box         = "vertical",
+      legend.title.align = 0.5,
+      plot.title         = element_text(face = "bold", hjust = 0.5),
+      plot.margin        = margin(5, 5, 5, 5)
+    ) +
+  
+    labs(
+      title = "Same-Chain Proportion by Epidemic Size"
+    )
+
+```
+
+```{r}
+yearly_summary %>%
+  filter(cases >= 5) %>%
+  ggplot(aes(x = year,
+             y = prop_same_chain,
+             size = cases)) + 
+    geom_point(shape = 16, alpha = 0.8, color = "darkred") +
+  
+    scale_x_continuous(
+      name   = "Year",
+      breaks = seq(min(yearly_summary$year),
+                   max(yearly_summary$year),
+                   by = 2),
+      expand = expansion(add = c(0.5, 0.5))
+    ) +
+  
+    scale_y_continuous(
+      name   = "Proportion Same-Chain Pairs",
+      labels = scales::number_format(accuracy = 0.01),
+      breaks = scales::pretty_breaks(n = 5),
+      expand = expansion(mult = c(0, 0.05))
+    ) +
+  
+    scale_size_area(
+      name      = "Cases",
+      max_size  = 10,
+      breaks    = pretty(yearly_summary$cases, n = 4)
+    ) +
+  
+    guides(
+      size = guide_legend(
+        title.position = "top",
+        title.hjust    = 0.5,
+        label.position = "right",
+        keywidth       = unit(1, "lines"),
+        keyheight      = unit(1, "lines"),
+        reverse        = FALSE
+      )
+    ) +
+  
+    theme_classic(base_size = 14) +
+    theme(
+      panel.grid         = element_blank(),
+      axis.line          = element_line(color = "black"),
+      axis.ticks         = element_line(color = "black"),
+      axis.text          = element_text(color = "black", size = 10),
+      axis.title         = element_text(face = "plain", color = "black"),
+      legend.position    = "right",
+      legend.direction   = "vertical",
+      legend.key.size    = unit(1, "lines"),
+      legend.title       = element_text(size = 11, face = "plain"),
+      legend.text        = element_text(size = 9),
+      legend.background  = element_rect(fill = "white", color = "white"),
+      legend.spacing.y   = unit(0.3, "lines"),
+      legend.margin      = margin(4, 4, 4, 4)
+    )
+
+```
+
+
+
+
+#Run Spearman on All Data 
+```{r}
+rho_all <- cor(glm_df$log_cases, glm_df$prop_same_chain, method = "spearman")
+spearman_test <- cor.test(glm_df$log_cases, glm_df$prop_same_chain, method = "spearman")
+
+cat("Spearman's rho:", rho_all, "\n")
+cat("p-value:", spearman_test$p.value, "\n")
+
+```
+
+#Check Normal GLM 
+```{r}
+fit_binom <- glm(cbind(successes, failures) ~ log_cases,
+                 family = binomial(),
+                 data = glm_df)
+```
+
+#Check Deviance
+```{r}
+phi_hat2 <- deviance(fit_binom) / fit_binom$df.residual
+print(phi_hat2)
+```
+
+#Quasi-Binomial GLM 
+```{r}
+fit_all <- glm(
+  cbind(successes, failures) ~ log_cases,
+  data   = glm_df,
+  family = quasibinomial()
+)
+
+glm_results_all <- tidy(fit_all, conf.int = TRUE)
+
+glm_results_or <- glm_results_all %>%
+  mutate(
+    OR        = exp(estimate),
+    OR_CI_low = exp(conf.low),
+    OR_CI_high= exp(conf.high)
+  ) %>%
+  select(
+    term, 
+    OR, 
+    OR_CI_low, 
+    OR_CI_high, 
+    p.value
+  )
+
+print(glm_results_or)
+```
+
+#NEW OLRE
+```{r}
+library(lme4)
+
+glm_df <- glm_df %>% mutate(obs_id = row_number())
+
+glmm_olre <- glmer(
+  cbind(successes, failures) ~ log_cases 
+    + (1 | serotype) 
+    + (1 | obs_id),
+  family  = binomial(link = "logit"),
+  data    = glm_df,
+  control = glmerControl(optimizer = "bobyqa")
+)
+
+pr  <- residuals(glmm_olre, type = "pearson")
+phi <- sum(pr^2) / df.residual(glmm_olre)
+cat("OLRE model dispersion φ̂ =", round(phi, 3), "\n")
+
+
+```
+
+#Model OUTPUT 
+```{r}
+summary(glmm_olre)
+```
+
+```{r}
+preds <- ggpredict(
+  model = glmm_olre,
+  terms = c("log_cases [all]", "serotype"),
+  type  = "random"
+)
+
+glm_df <- glm_df %>%
+  mutate(p_obs = successes / (successes + failures))
+
+ggplot() +
+  geom_jitter(
+    data = glm_df,
+    aes(x = log_cases, y = p_obs, colour = serotype),
+    width  = 0,
+    height = 0.02,
+    alpha  = 0.6,
+    size   = 1.5
+  ) +
+  geom_line(
+    data = preds,
+    aes(x = x, y = predicted, colour = group),
+    size = 1
+  ) +
+  geom_ribbon(
+    data = preds,
+    aes(x = x, ymin = conf.low, ymax = conf.high, fill = group),
+    alpha = 0.2, colour = NA
+  ) +
+  scale_colour_brewer("Serotype", palette = "Set1") +
+  scale_fill_brewer("Serotype", palette = "Set1") +
+  labs(
+    x        = "log(cases)",
+    y        = "Proportion of successes",
+    title    = "GLMM Fit with Outbreak-Level Data Points",
+    subtitle = "Points = observed proportions; Curves = fitted serotype-specific predictions"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "right")
+```
+
+```{r}
+glm_df <- glm_df %>%
+  mutate(
+    p_obs = successes / (successes + failures),
+    N     = successes + failures
+  )
+
+preds_fixed <- ggpredict(
+  model = glmm_olre,
+  terms = "log_cases [all]",
+  type  = "fixed"
+)
+
+ggplot() +
+  geom_point(
+    data     = glm_df,
+    aes(x = log_cases, y = p_obs, size = N),
+    shape    = 21,
+    colour   = "red",
+    fill     = "red",
+    alpha    = 0.6,
+    position = position_jitter(width = 0, height = 0.02)
+  ) +
+  scale_size_area(
+    name     = "N cases",
+    max_size = 6
+  ) +
+  geom_line(
+    data   = preds_fixed,
+    aes(x = x, y = predicted),
+    colour = "steelblue",
+    size   = 1.2
+  ) +
+  geom_ribbon(
+    data   = preds_fixed,
+    aes(x = x, ymin = conf.low, ymax = conf.high),
+    fill   = "steelblue",
+    alpha  = 0.2,
+    inherit.aes = FALSE
+  ) +
+  scale_x_continuous("log(cases)", expand = expansion(add = 0.1)) +
+  scale_y_continuous("Predicted P(success)",
+                     limits = c(0,1),
+                     expand = expansion(add = 0.02)) +
+  theme_classic(base_size = 14) +
+  theme(
+    panel.grid     = element_blank(),
+    axis.line      = element_line(colour = "black"),
+    axis.ticks     = element_line(colour = "black"),
+    axis.title     = element_text(face = "plain"),
+    axis.text      = element_text(face = "plain"),
+    legend.position = "right"
+  )
+
+```
+
+
+```{r}
+glm_df <- glm_df %>%
+  mutate(
+    p_obs = successes / (successes + failures),
+    N     = successes + failures
+  )
+
+preds_fixed <- ggpredict(
+  model = glmm_olre,
+  terms = "log_cases [all]",
+  type  = "fixed"
+)
+
+preds_random <- ggpredict(
+  model = glmm_olre,
+  terms = c("log_cases [all]", "serotype"),
+  type  = "random"
+)
+
+ggplot() +
+  geom_line(
+    data   = preds_random,
+    aes(x = x, y = predicted, group = group),
+    colour = "#4A90E2",   # darker blue
+    size   = 0.8,         # a bit thicker
+    alpha  = 0.7          # more opaque
+  ) +
+  geom_point(
+    data     = glm_df,
+    aes(x = log_cases, y = p_obs, size = N),
+    shape    = 21,
+    fill     = "red",
+    colour   = "red",
+    stroke   = 0.3,
+    alpha    = 0.7
+  ) +
+  scale_size_area(name = "N cases", max_size = 6) +
+  geom_line(
+    data   = preds_fixed,
+    aes(x = x, y = predicted),
+    colour = "#2C3E50",
+    size   = 1.2
+  ) +
+  geom_ribbon(
+    data   = preds_fixed,
+    aes(x = x, ymin = conf.low, ymax = conf.high),
+    fill   = "#2C3E50",
+    alpha  = 0.2,
+    inherit.aes = FALSE
+  ) +
+  scale_x_continuous("Logarithm of case count", expand = expansion(add = 0.1)) +
+  scale_y_continuous("Predicted Probability of Success",
+                     limits = c(0,1),
+                     expand = expansion(add = 0.02)) +
+  theme_classic(base_size = 14) +
+  theme(
+    panel.grid      = element_blank(),
+    axis.line       = element_line(colour = "black"),
+    axis.ticks      = element_line(colour = "black"),
+    axis.title      = element_text(face = "plain"),
+    axis.text       = element_text(face = "plain"),
+    legend.position = "right"
+  )
+
+```
+
+```{r}
+ggplot() +
+  geom_line(
+    data   = preds_random,
+    aes(x = x, y = predicted, group = group),
+    colour = "#4A90E2",
+    size   = 0.8,
+    alpha  = 0.7
+  ) +
+  geom_point(
+    data     = glm_df,
+    aes(x = log_cases, y = p_obs, size = N),
+    shape    = 21,
+    fill     = "darkred",
+    colour   = "darkred",
+    stroke   = 0.3,
+    alpha    = 0.7
+  ) +
+  scale_size_area(max_size = 6) +
+  geom_line(
+    data   = preds_fixed,
+    aes(x = x, y = predicted),
+    colour = "#2C3E50",
+    size   = 1.2
+  ) +
+  geom_ribbon(
+    data   = preds_fixed,
+    aes(x = x, ymin = conf.low, ymax = conf.high),
+    fill   = "#2C3E50",
+    alpha  = 0.2,
+    inherit.aes = FALSE
+  ) +
+  scale_x_continuous("Logarithm of case count", expand = expansion(add = 0.1)) +
+  scale_y_continuous("Predicted probability of success",
+                     limits = c(0,1),
+                     expand = expansion(add = 0.02)) +
+  theme_classic(base_size = 14) +
+    theme(
+    panel.grid      = element_blank(),
+    axis.line       = element_line(colour = "black"),
+    axis.ticks      = element_line(colour = "black"),
+    axis.title      = element_text(face = "plain",  color = "black"),
+    axis.text       = element_text(face = "plain",  color = "black"),
+    strip.text      = element_text(color = "black"),     # facet labels
+    plot.title      = element_text(color = "black"),     # if you ever add one
+    legend.text     = element_text(color = "black"),
+    legend.title    = element_text(color = "black"),
+    legend.position = "none"
+  )
+```
+
+```{r}
+ggplot() +
+  geom_line(
+    data   = preds_random,
+    aes(x = x, y = predicted, group = group),
+    colour = "#4A90E2",
+    size   = 0.8,
+    alpha  = 0.7
+  ) +
+  # raw data points
+  geom_point(
+    data     = glm_df,
+    aes(x = log_cases, y = p_obs, size = N),
+    shape    = 21,
+    fill     = "darkred",
+    colour   = "darkred",
+    stroke   = 0.3,
+    alpha    = 0.7
+  ) +
+  scale_size_area(max_size = 6) +
+  # fixed‐effects curve + CI
+  geom_line(
+    data   = preds_fixed,
+    aes(x = x, y = predicted),
+    colour = "#2C3E50",
+    size   = 1.2
+  ) +
+  geom_ribbon(
+    data   = preds_fixed,
+    aes(x = x, ymin = conf.low, ymax = conf.high),
+    fill   = "#2C3E50",
+    alpha  = 0.2,
+    inherit.aes = FALSE
+  ) +
+  # axes labels
+  scale_x_continuous(
+    "Logarithm of case count",
+    expand = expansion(add = 0.1)
+  ) +
+  scale_y_continuous(
+    "Probability of same chain",
+    limits = c(0, 0.5),
+    expand = expansion(add = 0.02)
+  ) +
+  # clean theme, no grid, no legend
+  theme_classic(base_size = 14) +
+  theme(
+    panel.grid      = element_blank(),
+    axis.line       = element_line(colour = "black"),
+    axis.ticks      = element_line(colour = "black"),
+    axis.title      = element_text(face = "plain",  color = "black"),
+    axis.text       = element_text(face = "plain",  color = "black"),
+    strip.text      = element_text(color = "black"),     # facet labels
+    plot.title      = element_text(color = "black"),     # if you ever add one
+    legend.text     = element_text(color = "black"),
+    legend.title    = element_text(color = "black"),
+    legend.position = "none"
+  )
+
+```
+
+```{r}
+library(lme4)
+
+obs_or <- exp(fixef(glmm_olre)["log_cases"])
+
+set.seed(123)  
+boot_or <- bootMer(
+  glmm_olre,
+  FUN = function(fit) exp(fixef(fit)["log_cases"]),
+  nsim = 1000,
+  type = "parametric"
+)
+
+ci <- quantile(boot_or$t, probs = c(0.025, 0.975))
+
+cat("Observed OR:", round(obs_or, 3), "\n")
+cat("95% CI: [", round(ci[1], 3), ", ", round(ci[2], 3), "]\n")
+```
+
+
+```{r}
+boot_df <- glm_df  
+
+boot_stat <- function(data, indices) {
+  d <- data[indices, ]
+  fit <- glmer(
+    cbind(successes, failures) ~ log_cases + (1 | serotype) + (1 | obs_id),
+    family  = binomial(link = "logit"),
+    data    = d,
+    control = glmerControl(optimizer = "bobyqa")
+  )
+  return(exp(fixef(fit)["log_cases"]))
+}
+
+set.seed(123)
+boot_res_np <- boot(
+  data  = boot_df,
+  statistic = boot_stat,
+  R     = 1000
+)
+
+ci_np <- boot.ci(boot_res_np, type = "perc")$percent[4:5]
+
+obs_or <- exp(fixef(glmm_olre)["log_cases"])
+cat("Observed OR:", round(obs_or, 3), "\n")
+cat("95% CI (non-parametric bootstrap): [", 
+    round(ci_np[1], 3), ", ", round(ci_np[2], 3), "]\n")
+
+```
+
+```{r}
+beta_hat   <- -0.5887             
+ci_log     <- c(-0.849, -0.324)    
+
+# Exponentiate to get odds ratio and its CI
+or_hat     <- exp(beta_hat)
+ci_or      <- exp(ci_log)
+
+cat(sprintf("OR = %.3f\n95%% CI = [%.3f, %.3f]\n",
+            or_hat, ci_or[1], ci_or[2]))
+
+```
+
+```{r}
+beta0 <- fixef(glmm_olre)["(Intercept)"]
+
+ci_log0 <- confint(glmm_olre, parm="(Intercept)", method="Wald")
+
+or0    <- exp(beta0)
+ci_or0 <- exp(ci_log0)
+
+cat(sprintf(
+  "Intercept OR = %.3f\n95%% CI = [%.3f, %.3f]\n",
+  or0, ci_or0[1], ci_or0[2]
+))
+
+```
+
+
+#SOME DIAGNOSTIC METRICS 
+```{r}
+library(lme4)
+library(DHARMa)
+library(performance)
+library(lmtest)
+library(dplyr)
+
+glm_df <- glm_df %>% mutate(obs_id = row_number())
+
+glmm_olre <- glmer(
+  cbind(successes, failures) ~ log_cases + (1 | serotype) + (1 | obs_id),
+  family  = binomial(link = "logit"),
+  data    = glm_df,
+  control = glmerControl(optimizer = "bobyqa")
+)
+
+summary(glmm_olre)
+
+fit_obs_only <- glmer(
+  cbind(successes, failures) ~ log_cases + (1 | obs_id),
+  family = binomial(link = "logit"),
+  data   = glm_df,
+  control= glmerControl(optimizer="bobyqa")
+)
+anova(fit_obs_only, glmm_olre, test="Chisq")
+
+fit_sero_only <- glmer(
+  cbind(successes, failures) ~ log_cases + (1 | serotype),
+  family = binomial(link = "logit"),
+  data   = glm_df,
+  control= glmerControl(optimizer="bobyqa")
+)
+anova(fit_sero_only, glmm_olre, test="Chisq")
+
+pr <- residuals(glmm_olre, type="pearson")
+phi_hat <- sum(pr^2) / df.residual(glmm_olre)
+cat("Dispersion φ̂ =", round(phi_hat, 3), "\n")
+
+
+print(r2_nakagawa(glmm_olre))
+
+
+sim_res <- simulateResiduals(glmm_olre, n = 1000)
+plot(sim_res)                     # overall QQ & residual vs predicted
+plotResiduals(sim_res, glm_df$log_cases)
+
+
+dotchart(ranef(glmm_olre)$serotype[,1], main="Serotype RE intercepts")
+dotchart(ranef(glmm_olre)$obs_id[,1],    main="Obs‐ID RE intercepts")
+
+```
+
+#LRT 
+```{r}
+library(lmtest)
+
+fit_obs_only <- glmer(
+  cbind(successes, failures) ~ log_cases + (1 | obs_id),
+  family = binomial(link="logit"),
+  data   = glm_df,
+  control= glmerControl(optimizer="bobyqa")
+)
+
+fit_sero_only <- glmer(
+  cbind(successes, failures) ~ log_cases + (1 | serotype),
+  family = binomial(link="logit"),
+  data   = glm_df,
+  control= glmerControl(optimizer="bobyqa")
+)
+
+glmm_olre <- glmer(
+  cbind(successes, failures) ~ log_cases + (1 | serotype) + (1 | obs_id),
+  family = binomial(link="logit"),
+  data   = glm_df,
+  control= glmerControl(optimizer="bobyqa")
+)
+
+lrtest(fit_obs_only, glmm_olre)
+lrtest(fit_sero_only, glmm_olre)
+```
+
+
+#Graph Prep 
+```{r}
+glm_preds_all <- broom::augment(fit_all, newdata = glm_df, type.predict = "response")
+
+glm_preds_all <- glm_df %>% bind_cols(.fitted = glm_preds_all$.fitted)
+
+```
+
+#GRAPH OF MODEL 
+```{r}
+ggplot(glm_preds_all, aes(x = log_cases, y = prop_same_chain)) +
+  geom_point(aes(size = cases), color = "#08519c", alpha = 0.55) +
+  geom_line(aes(y = .fitted), color = "#d73027", size = 1.2) +
+  scale_size_continuous(
+    name = "Cases",
+    range = c(2.5, 7),
+    breaks = pretty(glm_preds_all$cases, n = 3)
+  ) +
+  scale_x_continuous(
+    breaks = scales::pretty_breaks(n = 5)
+  ) +
+  scale_y_continuous(
+    limits = c(0, 0.5),
+    breaks = seq(0, 0.5, by = 0.1),
+    expand = expansion(mult = c(0, 0.03))
+  ) +
+  labs(
+    x = "log(Number of Cases)",
+    y = "Proportion Same-Chain Pairs"
+  ) +
+  theme_minimal(base_size = 15) +
+  theme(
+    axis.title      = element_text(face = "bold", size = 15),
+    axis.text       = element_text(size = 13, color = "black"),
+    plot.title      = element_text(face = "bold", size = 16, hjust = 0.5),
+    legend.position = "bottom",
+    legend.title    = element_text(size = 12),
+    legend.text     = element_text(size = 11),
+    # Remove gridlines
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    # Add black axis lines and ticks for professional look
+    axis.line        = element_line(size = 1, color = "black"),
+    axis.ticks       = element_line(size = 0.8, color = "black"),
+    plot.margin      = margin(10, 10, 10, 10)
+  )
+```
+

@@ -1,0 +1,425 @@
+---
+title: "effective_chain"
+author: 
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r}
+library(librarian)
+shelf(dplyr)
+shelf(purrr)
+shelf(boot)
+shelf(ggplot2)
+shelf(scales)
+shelf(minpack.lm)
+```
+
+#Source Function for Effective Chain Binning
+
+```{r}
+source("script/clean/helper_scripts/helper_effective_chain.R")
+```
+
+```{r}
+eta_df <- fc_eta_binning(
+  df             = all_data_df,
+  distance_col   = "spatial_dist",
+  same_chain_col = "same_chain",
+  bin_width      = 0.75,
+  n_boot         = 1000,
+  time_col       = "delta_yrs",
+  max_time       = 0.5    # only pairs ≤6 months apart
+)
+```
+
+#ALL SEROTYPE DISTANCE
+```{r}
+ggplot(eta_df, aes(x = bin_cutoff, y = eta)) +
+  geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper),
+                width = 0.2, color = "grey40", size = 0.8) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  
+  scale_y_log10(
+    name   = "Effective # Chains",
+    breaks = c(1, 2, 5, 10, 20, 50),
+    labels = as.character(c(1, 2, 5, 10, 20, 50))
+  ) +
+  
+  scale_x_continuous(
+    name   = "Distance (km)",
+    limits = c(0, 50),
+    breaks = seq(0, 50, by = 5),
+    expand = expansion(add = c(0, 0.5))
+  ) +
+  
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid       = element_blank(),    # remove all grid lines
+    axis.title       = element_text(face = "bold"),
+    axis.line.x      = element_line(color = "black"),
+    axis.line.y      = element_line(color = "black"),
+    axis.ticks       = element_line(color = "black"),
+    axis.text        = element_text(color = "black")
+  ) +
+  
+  ggtitle("Effective Number of Transmission Chains by Distance")
+```
+
+#All Serotype Area 
+```{r}
+eta_df2 <- eta_df %>%
+  mutate(area = pi * bin_cutoff^2)
+
+p_pub <- ggplot(eta_df2, aes(x = area, y = eta)) +
+  geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper),
+                width = 0, color = "#0A3D62", size = 0.8) +
+  geom_line(color = "#0A3D62", size = 1) +
+  geom_point(color = "#0A3D62", fill = "white", shape = 21, size = 2) +
+  
+  scale_y_log10(
+    name   = "Effective Number of Chains",
+    breaks = c(1, 2, 5, 10, 20, 50)
+  ) +
+  scale_x_continuous(
+    name   = expression(Area~(km^2)),
+    limits = c(0, 3000),
+    breaks = seq(0, 3000, by = 1000),
+    labels = comma_format(accuracy = 1)
+  ) +
+  
+  theme_classic(base_size = 14) +
+  theme(
+    panel.border        = element_blank(),
+    panel.background    = element_blank(),
+    panel.grid          = element_blank(),
+    axis.line.x.top     = element_blank(),
+    axis.line.y.right   = element_blank(),
+    axis.line.x.bottom  = element_line(color = "black"),
+    axis.line.y.left    = element_line(color = "black"),
+    axis.ticks          = element_line(color = "black"),
+    axis.text           = element_text(color = "black"),
+    plot.subtitle       = element_text(size = 12, hjust = 0.5)
+  )
+
+print(p_pub)
+```
+
+#All Serotype Area LOGGED AXES BOTH 
+```{r}
+eta_df |>
+  mutate(area = pi * bin_cutoff^2) |>
+  ggplot(aes(x = area, y = eta)) +
+  # error bars
+  geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper),
+                width = 0, color = "#0A3D62", size = 0.8) +
+  geom_point(color = "#0A3D62", fill = "white", shape = 21, size = 3, stroke = 0.8) +
+  geom_smooth(
+    method  = "lm",
+    formula = y ~ x,
+    se      = FALSE,
+    linetype = "dashed",
+    color   = "darkred",
+    size    = 1,
+   data = filter(eta_df2, area >= 100, area <= 3000)
+  ) +
+  
+  scale_x_log10(
+    name   = expression(Log[10]~Area~(km^2)),
+    limits = c(10, 3000),
+    breaks = c(10, 50, 300, 1000, 3000),
+    labels = comma_format(accuracy = 1)
+  ) +
+  scale_y_log10(
+    name   = expression(Log[10]~"Effective Number of Chains"),
+    breaks = c(1, 2, 5, 10, 20, 50)
+  ) +
+  theme_classic(base_size = 14) +
+  theme(
+    panel.grid          = element_blank(),
+    axis.line.x.top     = element_blank(),
+    axis.line.y.right   = element_blank(),
+    axis.line.x.bottom  = element_line(color = "black"),
+    axis.line.y.left    = element_line(color = "black"),
+    axis.ticks          = element_line(color = "black"),
+    axis.text           = element_text(color = "black")
+  )
+
+```
+
+#######NEWEST MODEL DISTANCE
+```{r}
+eta_df2 <- eta_df %>%
+  filter(!is.na(eta)) %>%                     
+  mutate(
+    se = (ci_upper - ci_lower) / (2 * 1.96)     
+  )
+
+start_vals <- list(
+  E0 = min(eta_df2$eta, na.rm=TRUE),             
+  A  = max(eta_df2$eta, na.rm=TRUE) - min(eta_df2$eta, na.rm=TRUE),
+  b  = 0.1                                         
+)
+
+eff_model <- nlsLM(
+  eta ~ E0 + A * (1 - exp(-b * bin_cutoff)),
+  data    = eta_df2,
+  start   = start_vals,
+  weights = 1 / (se^2)
+)
+
+print(summary(eff_model))
+ci <- confint(eff_model, level=0.95)
+print(ci)
+
+
+co    <- coef(eff_model)
+E0    <- co["E0"]                   # effective chains at zero distance
+A     <- co["A"]                    # rise above E0 to asymptote
+b_val <- co["b"]                    # rate constant (per km)
+Einf  <- E0 + A                     # asymptotic (max) chains
+d50   <- log(2) / b_val             # half‐distance
+
+cat(sprintf(
+  "E0 = %.2f chains\nE∞ = %.2f chains\nb = %.3f km⁻¹\nd50 = %.2f km\n",
+  E0, Einf, b_val, d50
+))
+
+eta_df2 <- eta_df2 %>%
+  mutate(
+    fitted    = predict(eff_model),
+    resid     = eta - fitted,
+    std_resid = resid / se
+  )
+
+obs   <- eta_df2$eta
+pred  <- eta_df2$fitted
+pseudoR2 <- 1 - sum((obs - pred)^2) / sum((obs - mean(obs))^2)
+rmse     <- sqrt(mean((obs - pred)^2))
+cat(sprintf("Pseudo-R² = %.3f;  RMSE = %.3f\n", pseudoR2, rmse))
+
+ggplot(eta_df2, aes(x = fitted, y = std_resid)) +
+  geom_point() + geom_hline(yintercept = 0, linetype="dashed") +
+  labs(x="Fitted # chains", y="Std residual",
+       title="Std Residuals vs Fitted") +
+  theme_minimal()
+
+ggplot(eta_df2, aes(x = bin_cutoff, y = std_resid)) +
+  geom_point() + geom_hline(yintercept = 0, linetype="dashed") +
+  labs(x="Distance (km)", y="Std residual",
+       title="Std Residuals vs Distance") +
+  theme_minimal()
+```
+
+##DISTANCE MODEL INTERPRET 
+```{r}
+coefs <- coef(eff_model)
+E0 <- coefs["E0"]
+A  <- coefs["A"]
+b  <- coefs["b"]
+
+ci <- confint(eff_model)
+
+E0_ci <- ci["E0", ]
+A_ci  <- ci["A", ]
+b_ci  <- ci["b", ]
+
+d50 <- log(2) / b
+d50_ci <- log(2) / rev(b_ci)  
+
+percent_increase <- (1 - exp(-b)) * 100
+percent_increase_ci <- (1 - exp(-rev(b_ci))) * 100  # lower to upper
+
+# 5. Display results
+cat(sprintf("E0 = %.2f [%.2f–%.2f] chains\n", E0, E0_ci[1], E0_ci[2]))
+cat(sprintf("A  = %.2f [%.2f–%.2f] chains\n", A, A_ci[1], A_ci[2]))
+cat(sprintf("b  = %.3f [%.3f–%.3f] km⁻¹\n", b, b_ci[1], b_ci[2]))
+cat(sprintf("d₅₀ = %.2f [%.2f–%.2f] km\n", d50, d50_ci[1], d50_ci[2]))
+cat(sprintf("%% Increase per km = %.2f%% [%.2f–%.2f]\n",
+            percent_increase, percent_increase_ci[1], percent_increase_ci[2]))
+
+```
+
+##NEWEST MODEL AREA 
+```{r}
+eta_df2 <- eta_df %>%
+  filter(!is.na(eta)) %>%
+  mutate(
+    area = pi * bin_cutoff^2,
+    se   = (ci_upper - ci_lower)/(2*1.96)
+  )
+
+start_vals_A <- list(
+  E0     = min(eta_df2$eta, na.rm = TRUE),
+  A_amp  = max(eta_df2$eta, na.rm = TRUE) - min(eta_df2$eta, na.rm = TRUE),
+  b_A    = 1e-4    # per km², very small to start
+)
+
+eff_model_A <- nlsLM(
+  eta   ~ E0 + A_amp * (1 - exp(-b_A * area)),
+  data   = eta_df2,
+  start  = start_vals_A,
+  weights= 1 / se^2
+)
+
+co_A   <- coef(eff_model_A)
+E0_A   <- co_A["E0"]
+Amp_A  <- co_A["A_amp"]
+bA     <- co_A["b_A"]    # now in km⁻²
+Einf_A <- E0_A + Amp_A
+A50    <- log(2) / bA     # half‐area (in km²)
+
+cat(sprintf(
+  "E0 = %.2f chains\nE∞ = %.2f chains\nb_A = %.3g km⁻²\nA50 = %.0f km²\n",
+  E0_A, Einf_A, bA, A50
+))
+
+```
+
+
+
+##AREA MODEL PARAMETERS
+```{r}
+ci_params <- confint(eff_model_A, level = 0.95)
+
+ci_bA     <- ci_params["b_A", ]   
+
+pct_est   <- (1 - exp(-bA)) * 100
+pct_lower <- (1 - exp(-ci_bA[2])) * 100   
+pct_upper <- (1 - exp(-ci_bA[1])) * 100   
+
+cat(sprintf(
+  "Parameter estimates (95%% CI):\n
+   E0     = %.2f (%.2f – %.2f)\n
+   A_amp  = %.2f (%.2f – %.2f)\n
+   b_A    = %.3g (%.3g – %.3g) km⁻²\n
+   A50    = %.0f (%.0f – %.0f) km²\n
+   Percent increase per km² = %.2f%% (%.2f%% – %.2f%%)\n",
+  E0_A,      ci_params["E0",1],    ci_params["E0",2],
+  Amp_A,     ci_params["A_amp",1], ci_params["A_amp",2],
+  bA,        ci_bA[1],             ci_bA[2],
+  A50,       log(2)/ci_bA[2],      log(2)/ci_bA[1],
+  pct_est,   pct_lower,            pct_upper
+))
+```
+
+
+##LOG Interpretation Model 
+```{r}
+eta_log <- eta_df %>%
+  filter(!is.na(eta)) %>%
+  mutate(
+    area     = pi * bin_cutoff^2,
+    logA     = log10(area),
+    logEta   = log10(eta),
+    se_eta   = (ci_upper - ci_lower) / (2 * 1.96),
+    var_log  = (se_eta / (eta * log(10)))^2,
+    w_log    = 1 / var_log
+  ) %>%
+  filter(area >= 100, area <= 3000)
+
+log_mod_w <- lm(logEta ~ logA, data = eta_log, weights = w_log)
+
+res_w <- tidy(
+  log_mod_w,
+  conf.int   = TRUE,
+  conf.level = 0.95
+) %>%
+  filter(term == "logA") %>%
+  transmute(
+    beta1            = estimate,
+    `se(β)`          = std.error,
+    `95% CI (β₁)`    = sprintf("[%.3f – %.3f]", conf.low, conf.high),
+    `p‐value`        = p.value,
+    # doubling
+    `Δη at 2×A (%)`      = (2^estimate - 1) * 100,
+    `95% CI (2×A)`       = sprintf("[%.1f%% – %.1f%%]",
+                               (2^conf.low  - 1)*100,
+                               (2^conf.high - 1)*100),
+    `Δη at 10×A (%)`     = (10^estimate - 1) * 100,
+    `95% CI (10×A)`      = sprintf("[%.1f%% – %.1f%%]",
+                               (10^conf.low  - 1)*100,
+                               (10^conf.high - 1)*100)
+  )
+
+print(res_w)
+
+summary(log_mod_w)
+```
+
+#Additionally more LOG diagnistics
+```{r}
+resids <- resid(log_mod_w)
+rmse <- sqrt(mean(resids^2))
+cat(sprintf("RMSE (log10 scale) = %.3f\n", rmse))
+
+w    <- weights(log_mod_w)
+rmse_w <- sqrt(sum(w * resids^2) / sum(w))
+cat(sprintf("Weighted RMSE (log10 scale) = %.3f\n", rmse_w))
+
+```
+
+
+
+######
+#Bin by Serotype
+```{r}
+eta_by_serotype <- all_data_df %>%
+  filter(!is.na(same_chain), delta_yrs <= 0.5) %>%  # within 6-month season
+  group_by(serotype) %>%
+  group_modify(~ fc_eta_binning(
+                 df             = .x,
+                 distance_col   = "spatial_dist",
+                 same_chain_col = "same_chain",
+                 bin_width      = 0.75,
+                 n_boot         = 500,
+                 time_col       = "delta_yrs",
+                 max_time       = 0.5
+               )) %>%
+  ungroup()
+```
+
+#Plot by Serotype
+```{r}
+ggplot(eta_by_serotype, aes(x = bin_cutoff, y = eta, color = serotype)) +
+  geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper),
+                width = 0.2, size = 0.8, alpha = 0.7) +
+  geom_line(size = 1) +
+  geom_point(size = 2.5, shape = 21, fill = "white") +
+  
+  scale_y_log10(
+    name        = "Effective # Chains (η)",
+    breaks      = c(1, 2, 5, 10, 20, 50),
+    labels      = as.character(c(1, 2, 5, 10, 20, 50)),
+    minor_breaks = NULL
+  ) +
+  scale_x_continuous(
+    name   = "Distance (km)",
+    limits = c(0, 50),
+    breaks = seq(0, 50, by = 5),
+    expand = expansion(add = c(0, 0.5))
+  ) +
+  coord_cartesian(ylim = c(1, 70)) +
+  
+  scale_color_manual(values = c(
+    "DENV1" = "#1f78b4",
+    "DENV2" = "#33a02c",
+    "DENV3" = "#e31a1c",
+    "DENV4" = "#ff7f00"
+  )) +
+  
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid         = element_blank(),
+    panel.grid.major.y = element_line(color = "grey90"),
+    axis.line          = element_line(color = "black"),
+    axis.ticks         = element_line(color = "black"),
+    axis.title         = element_text(face = "bold"),
+    axis.text          = element_text(color = "black"),
+    legend.position    = "top",
+    plot.title         = element_text(face = "bold", hjust = 0.5)
+  ) +
+  
+  ggtitle("Effective Chains by Distance")
+```

@@ -1,0 +1,537 @@
+---
+title: "combining_serotypes"
+author: 
+date: "`r Sys.Date()`"
+output: html_document
+---
+#Load Libraries 
+```{r}
+library(librarian)
+shelf(dplyr)
+shelf(purrr)
+shelf(tidyverse)
+shelf(scales)
+shelf(minpack.lm)
+shelf(car)
+shelf(ResourceSelection)
+shelf(pROC)
+shelf(Metrics)
+shelf(ggplot2)
+```
+
+
+#Same_chain is defined in each df 
+#all_data_df combines each serotype data to make one df 
+
+#For each distance bin, it counts the total number of pairs within that cutoff and the number flagged as same_chain, computes the observed proportion of linked pairs, and then bootstraps for 95% confidence interval for that proportion
+
+#Make Massive DF 
+```{r}
+all_data_df <- bind_rows(
+  d1_pairs_df %>% mutate(serotype = "DENV1"),
+  d2_pairs_df %>% mutate(serotype = "DENV2"),
+  d3_pairs_df %>% mutate(serotype = "DENV3"),
+  d4_pairs_df %>% mutate(serotype = "DENV4")
+)
+```
+
+#cumulative distance bins of width 0.75 km.
+#include every pair whose spatial separation < distance 
+#cumulative proportion
+
+
+#Source 2A Binning Function
+```{r}
+source("script/clean/helper_scripts/helper_2A_binning.R")
+```
+
+#Make 2A Binning Frame 
+```{r}
+chain_summary_df <- fc_2A_binning(all_data_df)
+```
+
+#Plot 2A
+```{r}
+all_serotype_prop <- ggplot(chain_summary_df, aes(x = bin_cutoff, y = prop_same_chain)) +
+  geom_point(shape = 21, size = 3, stroke = 1.2, color = "blue", fill = "white") +
+  geom_errorbar(aes(ymin = lower, ymax = upper), width = 0.2, alpha = 0.8, color = "blue") +
+  
+  scale_y_continuous(
+    name   = "Proportion Same Chain",
+    breaks = seq(0, 1, by = 0.01),
+    labels = scales::number_format(accuracy = 0.01),
+    expand = expansion(mult = c(0, 0.05))
+  ) +
+  scale_x_continuous(
+    name   = "Distance (km)",
+    limits = c(0, 30),
+    breaks = seq(0, 30, by = 5),
+    labels = scales::number_format(accuracy = 1)
+  ) +
+  
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid      = element_blank(),
+    axis.line       = element_line(size = 0.6, color = "black"),
+    axis.ticks      = element_line(size = 0.6, color = "black"),
+    axis.title      = element_text(size = 14, face = "plain", color = "black"),
+    axis.text       = element_text(size = 12, color = "black"),
+    axis.text.x     = element_text(angle = 45, hjust = 1),
+    plot.title      = element_blank(),
+    legend.title    = element_blank(),
+    legend.position = "top"
+  )
+
+all_serotype_prop
+
+
+```
+
+##CHAIN DF EXTRAPOLATION 
+```{r}
+df_emp <- chain_summary_df %>%
+  mutate(
+    d_mid = (lower + upper) / 2
+  ) %>%
+  filter(d_mid > 0) %>%      # drop the 0‐km bin
+  arrange(d_mid)
+
+P0 <- df_emp$prop_same_chain[1]
+half_prop <- P0/2
+
+idx <- which(df_emp$prop_same_chain <= half_prop)[1]
+if (!is.na(idx) && idx > 1) {
+  d1 <- df_emp$d_mid[idx-1]; p1 <- df_emp$prop_same_chain[idx-1]
+  d2 <- df_emp$d_mid[idx];   p2 <- df_emp$prop_same_chain[idx]
+  d50 <- d1 + (half_prop - p1)*(d2 - d1)/(p2 - p1)
+} else {
+  d50 <- NA
+}
+
+df_rates <- df_emp %>%
+  mutate(b_i = -log(prop_same_chain / P0) / d_mid,
+         d50_i = log(2)/b_i)
+
+b_ci    <- quantile(df_rates$b_i,   c(0.025, 0.975), na.rm = TRUE)
+d50_ci  <- quantile(df_rates$d50_i, c(0.025, 0.975), na.rm = TRUE)
+
+empirical_metrics <- tibble(
+  empirical_d50   = d50,
+  d50_lo          = d50_ci[1],
+  d50_hi          = d50_ci[2],
+  median_b        = median(df_rates$b_i, na.rm = TRUE),
+  b_lo            = b_ci[1],
+  b_hi            = b_ci[2]
+)
+
+print(empirical_metrics)
+```
+
+
+#LOGISTIC REGRESSION FIT 
+```{r}
+mod_glm <- glm(
+  same_chain ~ log(spatial_dist + 1e-6),
+  family = binomial(link = "logit"),
+  data   = all_data_df
+)
+
+term_name <- grep("^log\\(spatial_dist", names(coef(mod_glm)), value = TRUE)
+beta        <- coef(mod_glm)[term_name]
+ci_mat      <- confint(mod_glm)
+ci_beta     <- ci_mat[term_name, ]
+OR_log_km   <- exp(beta)
+OR_CI_log   <- exp(ci_beta)
+pct_drop_OR <- (1 - OR_log_km) * 100
+
+cat(sprintf(
+  "Logistic regression (per log‐km):\n  Odds ratio = %.3f (95%% CI %.3f–%.3f)\n  Approximate %.1f%% decrease in odds per log‐km\n\n",
+  OR_log_km, OR_CI_log[1], OR_CI_log[2], pct_drop_OR
+))
+```
+
+#Exponential Function Fit 
+```{r}
+decay_fit <- nlsLM(
+  prop_same_chain ~ a * exp(-b * bin_cutoff),
+  data  = chain_summary_df,
+  start = list(a = 1, b = 0.1)
+)
+```
+
+
+#Logistic Checks 
+```{r}
+bt_log <- boxTidwell(
+  same_chain ~ log(spatial_dist + 1e-6),
+  data = all_data_df %>% filter(spatial_dist > 0)
+)
+print(bt_log)  
+
+hl_log <- hoslem.test(
+  mod_glm$y,
+  fitted(mod_glm),
+  g = 10
+)
+print(hl_log)   
+
+auc_log   <- auc(mod_glm$y, fitted(mod_glm))
+brier_log <- mean((fitted(mod_glm) - mod_glm$y)^2)
+cat("Log‐distance model AUC =", round(auc_log, 3), "\n")
+cat("Log‐distance model Brier score =", round(brier_log, 4), "\n")
+
+# 4) Overdispersion check
+phi_log <- sum(residuals(mod_glm, type = "pearson")^2) / mod_glm$df.residual
+cat("Log‐distance model dispersion φ̂ =", round(phi_log, 3), "\n")
+
+
+res_decay  <- residuals(decay_fit)
+pred_decay <- predict(decay_fit)
+plot(pred_decay, res_decay,
+     xlab = "Fitted P(d)", ylab = "Residuals",
+     main = "Residuals vs Fitted: Exponential‐decay")
+abline(h = 0, lty = 2)
+
+rmse_decay <- rmse(chain_summary_df$prop_same_chain, pred_decay)
+sse        <- sum((chain_summary_df$prop_same_chain - pred_decay)^2)
+sst        <- sum((chain_summary_df$prop_same_chain -
+                   mean(chain_summary_df$prop_same_chain))^2)
+r2_decay   <- 1 - sse/sst
+cat("Exponential RMSE =", round(rmse_decay, 4), "\n")
+cat("Exponential pseudo‐R² =", round(r2_decay, 3), "\n")
+
+```
+
+##EXPONENTIAL CHECK PLS
+```{r}
+decay_fit <- nlsLM(
+  prop_same_chain ~ a * exp(-b * bin_cutoff),
+  data  = chain_summary_df,
+  start = list(a = 1, b = 0.1)
+)
+
+fitted_d <- predict(decay_fit)
+resid_d  <- chain_summary_df$prop_same_chain - fitted_d
+
+rmse_d <- sqrt(mean(resid_d^2))
+sst_d  <- sum((chain_summary_df$prop_same_chain - mean(chain_summary_df$prop_same_chain))^2)
+sse_d  <- sum(resid_d^2)
+r2_d   <- 1 - sse_d/sst_d
+cat(sprintf("RMSE = %.4f\npseudo‐R² = %.3f\n\n", rmse_d, r2_d))
+
+ggplot(data.frame(fitted = fitted_d, resid = resid_d),
+       aes(x = fitted, y = resid)) +
+  geom_point() +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(title = "Residuals vs Fitted", x = "Fitted P(d)", y = "Residuals") +
+  theme_minimal()
+
+qqnorm(resid_d, main = "Q–Q Plot of Residuals"); qqline(resid_d)
+```
+
+#3 Parameter exponential FUNCTION
+```{r}
+start_vals <- list(
+  c = min(chain_summary_df$prop_same_chain, na.rm = TRUE),                    #
+  a = max(chain_summary_df$prop_same_chain, na.rm = TRUE) -
+      min(chain_summary_df$prop_same_chain, na.rm = TRUE),                    #
+  b = 0.1                                                                     
+)
+
+decay_model <- nlsLM(
+  prop_same_chain ~ c + a * exp(-b * bin_cutoff),
+  data    = chain_summary_df,
+  start   = start_vals,
+  weights = 1 / (se^2)
+)
+
+summary(decay_model)
+
+ci <- confint(decay_model, level = 0.95)
+print(ci)
+
+ci_rounded <- round(ci, 4)
+colnames(ci_rounded) <- c("2.5 %", "97.5 %")
+ci_rounded
+```
+
+```{r}
+coef_vals     <- coef(decay_model)
+plateau_c     <- coef_vals["c"]
+amplitude_a   <- coef_vals["a"]
+decay_rate_b  <- coef_vals["b"]
+half_distance <- log(2) / decay_rate_b
+initial_p0    <- plateau_c + amplitude_a
+
+cat(sprintf(
+  "Fitted parameters:\n • c (plateau)     = %.4f\n • a (amplitude)   = %.4f\n • b (decay rate)  = %.4f\n • p(0)            = %.4f\n • half-distance   = %.2f km\n",
+  plateau_c, amplitude_a, decay_rate_b, initial_p0, half_distance
+))
+```
+
+
+```{r}
+ci <- confint(decay_model, level = 0.95)
+
+b_low  <- ci["b", 1]
+b_high <- ci["b", 2]
+
+b_est  <- coef(decay_model)["b"]
+
+# Compute half‐distance and its 95% CI
+half_dist_est   <- log(2) / b_est
+half_dist_lower <- log(2) / b_high   
+half_dist_upper <- log(2) / b_low
+
+# Report
+cat(sprintf(
+  "Half‐distance = %.2f km (95%% CI: %.2f–%.2f km)\n",
+  half_dist_est, half_dist_lower, half_dist_upper
+))
+
+```
+
+
+
+#Check 3-Param Model Fit 
+```{r}
+chain_summary_df <- chain_summary_df %>%
+  mutate(
+    fitted   = predict(decay_model),
+    residual = prop_same_chain - fitted
+  )
+
+obs <- chain_summary_df$prop_same_chain
+pred <- chain_summary_df$fitted
+pseudo_R2 <- 1 - sum((obs - pred)^2) / sum((obs - mean(obs))^2)
+cat(sprintf("Pseudo-R² = %.3f\n", pseudo_R2))
+
+rmse <- sqrt(mean((obs - pred)^2))
+cat(sprintf("RMSE       = %.4f\n", rmse))
+
+brier <- mean((obs - pred)^2)
+cat(sprintf("Brier score = %.6f\n", brier))
+```
+
+##########################################
+
+#Source Prep Functon for 1G 
+```{r}
+source("script/clean/helper_scripts/helper_1G_binning.R")
+```
+
+#Prep for 1G
+```{r}
+cumulative_df <- fc_1G_binning(all_data_df) 
+
+overall_median <- all_data_df %>% 
+  summarise(median_spatial = median(spatial_dist, na.rm = TRUE)) %>% 
+  pull(median_spatial)
+```
+
+#Plot for 1G 
+```{r}
+all_serotype_evol_time <- ggplot(cumulative_df, aes(x = evolutionary_time, y = spatial_mean)) +
+  geom_ribbon(aes(ymin = spatial_lower, ymax = spatial_upper),
+              fill = "lightblue", alpha = 0.4) +
+  geom_point(color = "blue", size = 1.5) +
+  geom_line(color = "blue") +
+  geom_hline(yintercept = overall_median,
+             linetype = "dashed",
+             color    = "black") +
+  scale_x_continuous(
+    name = "Evolutionary time (years)",
+    sec.axis = sec_axis(
+      trans = ~ . / generation_time_years,
+      name  = "Transmission generations (No.)"
+    )
+  ) +
+  theme_minimal() +
+  theme(
+    axis.title.x.top = element_text(margin = margin(b = 10), size = 12),
+    axis.text.x.top  = element_text(size = 10),
+    axis.line.x.top  = element_line(color = "black")
+  ) +
+  labs(
+    y = "Spatial distance (km)"
+  )
+
+all_serotype_evol_time
+
+ggsave("1G_all_serotype_.pdf", plot = all_serotype_evol_time, device = "pdf", width = 8, height = 6)
+```
+
+##COMPARING TIME 
+
+#Make Data Frame 
+```{r}
+period_lookup_df <- bind_rows(
+  d1_94_06_pairs_df,
+  d1_07_19_pairs_df,
+  d2_94_06_pairs_df,
+  d2_07_19_pairs_df,
+  d3_94_06_pairs_df,
+  d3_07_19_pairs_df,
+  d4_94_06_pairs_df,
+  d4_07_19_pairs_df)
+```
+
+#Source Same Chain
+```{r}
+source("script/clean/helper_scripts/helper_same_chain.R")
+```
+
+#Function for same chain 
+```{r}
+period_lookup_df <- fc_same_chain(period_lookup_df)
+sum(period_lookup_df$same_chain, na.rm = TRUE)
+```
+
+#Source Function for 1G Binning 
+```{r}
+source("script/clean/helper_scripts/helper_1G_binning.R")
+```
+
+#Binning for Plot 1G for All Serotype Time Comparison 
+```{r}
+period1_df <- period_lookup_df %>% 
+  filter(period == "1994-2006") %>% 
+  fc_1G_binning() %>% 
+  mutate(period = "1994-2006")
+
+period2_df <- period_lookup_df %>% 
+  filter(period == "2007-2019") %>% 
+  fc_1G_binning() %>% 
+  mutate(period = "2007-2019")
+
+period_cumulative_df <- bind_rows(period1_df, period2_df)
+
+overall_median        <- bind_rows(d1_pairs_df, d2_pairs_df, d3_pairs_df, d4_pairs_df) %>% 
+                         pull(spatial_dist) %>% 
+                         median(na.rm = TRUE)
+generation_time_years <- 20 / 365
+```
+
+#Plot 1G for All Serotype Time Comparison 
+```{r}
+all_sero_period_evol_time <- ggplot(period_cumulative_df, 
+    aes(x = evolutionary_time, y = spatial_mean, color = period, fill = period)) +
+  geom_ribbon(aes(ymin = spatial_lower, ymax = spatial_upper),
+              alpha = 0.4, color = NA) +
+  geom_point(size = 1.5) +
+  geom_line(size = 1) +
+  geom_hline(yintercept = overall_median,
+             linetype = "dashed",
+             color    = "black") +
+  scale_x_continuous(
+    name = "Evolutionary time (years)",
+    sec.axis = sec_axis(
+      trans = ~ . / generation_time_years,
+      name  = "Transmission generations (No.)"
+    )
+  ) +
+  scale_color_manual(values = c("1994-2006" = "blue",
+                                "2007-2019" = "darkred")) +
+  scale_fill_manual(values = c("1994-2006" = "blue",
+                               "2007-2019" = "darkred")) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.title.x.top = element_text(margin = margin(b = 10), size = 12),
+    axis.text.x.top  = element_text(size = 10),
+    axis.line.x.top  = element_line(color = "black"),
+    legend.title     = element_blank(),
+    legend.position  = "top"
+  ) +
+  labs(y = "Spatial distance (km)")
+
+all_sero_period_evol_time
+
+#ggsave("1G_all_period.pdf", plot = all_sero_period_evol_time, device = "pdf", width = 8, height = 6)
+```
+
+#Source 2A Binning Function
+```{r}
+source("script/clean/helper_scripts/helper_2A_binning.R")
+```
+
+#Binning for Plot 2A for All Serotype Time Comparison 
+```{r}
+period1_df_2A <- period_lookup_df %>%
+  filter(period == "1994-2006") %>%
+  fc_2A_binning() %>%
+  transmute(
+    period        = "1994-2006",
+    distance_km   = bin_cutoff,
+    total_pairs   = n,
+    chain_pairs   = same_chain_count,
+    prop_chain    = prop_same_chain,
+    se_chain      = se,
+    ci_lower      = lower,
+    ci_upper      = upper
+  )
+
+period2_df_2A <- period_lookup_df %>%
+  filter(period == "2007-2019") %>%
+  fc_2A_binning() %>%
+  transmute(
+    period        = "2007-2019",
+    distance_km   = bin_cutoff,
+    total_pairs   = n,
+    chain_pairs   = same_chain_count,
+    prop_chain    = prop_same_chain,
+    se_chain      = se,
+    ci_lower      = lower,
+    ci_upper      = upper
+  )
+
+all_chain_summary <- bind_rows(period1_df_2A, period2_df_2A) %>%
+  filter(!is.na(prop_chain))
+```
+
+#Plot 2A for All Serotype Time Comparison 
+```{r}
+all_prop_chain_time <- ggplot(all_chain_summary,
+                              aes(x = distance_km,
+                                  y = prop_chain,
+                                  color = period,
+                                  group = period)) +
+  geom_point(shape = 21, size = 3, stroke = 1.2, fill = "white") +
+  geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper),
+                width = 0.2) +
+  geom_line(size = 1) +
+  
+  scale_y_continuous(
+    name   = "Proportion Same Chain",
+    breaks = seq(0, 1, by = 0.02),
+    labels = number_format(accuracy = 0.01),
+    expand = expansion(mult = c(0, 0.05))
+  ) +
+  scale_x_continuous(
+    name   = "Distance (km)",
+    limits = c(0, 30),
+    breaks = seq(0, 30, by = 5),
+    labels = number_format(accuracy = 1)
+  ) +
+  
+  labs(
+    title = "Proportion of Pairs in Same Transmission Chain by Period"
+  ) +
+  
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid      = element_blank(),
+    axis.line       = element_line(size = 0.6, color = "black"),
+    axis.ticks      = element_line(size = 0.6, color = "black"),
+    axis.title      = element_text(size = 14, face = "bold"),
+    axis.text.x     = element_text(angle = 45, hjust = 1),
+    axis.text       = element_text(size = 12),
+    legend.title    = element_blank(),
+    legend.position = "top",
+    plot.title      = element_text(size = 16, face = "bold", hjust = 0.5)
+  )
+
+print(all_prop_chain_time)
+
+#ggsave("2A_all_period.pdf", plot = all_prop_chain_time, device = "pdf", width = 8, height = 6)
+```
+
