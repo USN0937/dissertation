@@ -1,0 +1,329 @@
+---
+title: "age_group_analysis"
+author: 
+date: "`r Sys.Date()`"
+output: html_document
+---
+#load libraries 
+```{r}
+library(librarian)
+shelf(dplyr)
+shelf(binom)
+shelf(tidyr)
+shelf(ggplot2)
+shelf(scales)
+shelf(purrr)
+shelf(tibble)
+shelf(broom)
+shelf(multiwayvcov)
+shelf(lmtest)
+shelf(pROC)
+```
+
+#MAKE AGE DATA FRAME 
+```{r}
+age_data_df <- all_data_df %>%
+  dplyr::left_join(
+    dplyr::select(kpp_data, studyno, ageyr),
+    by = c("sample1" = "studyno")
+  ) %>%
+  dplyr::rename(age1 = ageyr) %>%
+  
+  dplyr::left_join(
+    dplyr::select(kpp_data, studyno, ageyr),
+    by = c("sample2" = "studyno")
+  ) %>%
+  dplyr::rename(age2 = ageyr) %>%
+  
+  dplyr::mutate(
+    age_group = dplyr::case_when(
+      age1 <  5              ~ "<5y",
+      age1 >= 5 & age1 <= 10 ~ "5-10y",
+      TRUE                   ~ ">10y"
+    ),
+    age_group = factor(age_group,
+                       levels = c("<5y", "5-10y", ">10y"))
+  ) 
+```
+
+#Source 2A Binning Function
+```{r}
+source("script/clean/helper_scripts/helper_2A_binning.R")
+```
+
+#NEW BINS WITH FIXED FOCAL CASE 
+```{r}
+shelf(dplyr, tidyr, purrr, ggplot2)
+
+
+age_pair_df <- all_data_df %>%
+  dplyr::left_join(
+    dplyr::select(kpp_data, studyno, admitdate, ageyr),
+    by = c("sample1" = "studyno")
+  ) %>%
+  dplyr::rename(admit1 = admitdate, age1 = ageyr) %>%
+  dplyr::mutate(admit1 = as.Date(admit1)) %>%
+  dplyr::left_join(
+    dplyr::select(kpp_data, studyno, admitdate, ageyr),
+    by = c("sample2" = "studyno")
+  ) %>%
+  dplyr::rename(admit2 = admitdate, age2 = ageyr) %>%
+  dplyr::mutate(admit2 = as.Date(admit2))
+
+# 1) Re-order so sample1 is always the earlier-admit (focal) case
+ordered_age_pairs <- age_pair_df %>%
+  dplyr::mutate(first1 = admit1 <= admit2) %>%
+  dplyr::mutate(
+    sample1 = if_else(first1, sample1, sample2),
+    sample2 = if_else(first1, sample2, sample1),
+    admit1  = if_else(first1, admit1,  admit2),
+    admit2  = if_else(first1, admit2,  admit1),
+    age1    = if_else(first1, age1,    age2),
+    age2    = if_else(first1, age2,    age1)
+  ) %>%
+  dplyr::select(-first1)
+
+
+ordered_age_pairs <- ordered_age_pairs %>%
+  dplyr::mutate(
+    age_group = dplyr::case_when(
+      age1 <  5             ~ "<5y",
+      age1 >= 5 & age1 <= 10 ~ "5-10y",
+      TRUE                   ~ ">10y"
+    ) %>%
+    factor(levels = c("<5y","5-10y",">10y"))
+  )
+
+
+ref_age_binned <- ordered_age_pairs %>%
+  filter(age_group == ">10y") %>%
+  fc_2A_binning() %>%
+  rename(
+    prop_ref     = prop_same_chain,
+    ci_lower_ref = lower,
+    ci_upper_ref = upper
+  )
+
+age_diff_df <- ordered_age_pairs %>%
+  filter(age_group != ">10y") %>%
+  group_by(age_group) %>%
+  group_modify(~ .x %>%
+    fc_2A_binning() %>%
+    rename(
+      prop_grp     = prop_same_chain,
+      ci_lower_grp = lower,
+      ci_upper_grp = upper
+    ) %>%
+    left_join(ref_age_binned, by = "bin_cutoff") %>%
+    mutate(
+      prop_diff     = prop_grp - prop_ref,
+      se_diff       = sqrt(
+                        ((ci_upper_grp - prop_grp)/1.96)^2 +
+                        ((ci_upper_ref - prop_ref)/1.96)^2
+                      ),
+      ci_lower_diff = prop_diff - 1.96 * se_diff,
+      ci_upper_diff = prop_diff + 1.96 * se_diff
+    )
+  ) %>%
+  ungroup()
+
+ggplot(age_diff_df, aes(bin_cutoff, prop_diff, colour=age_group, linetype=age_group)) +
+  geom_ribbon(aes(ymin=ci_lower_diff, ymax=ci_upper_diff, fill=age_group),
+              alpha=0.3, colour=NA) +
+  geom_line(size=1.2) +
+  geom_hline(yintercept=0, linetype="dashed", colour="grey40") +
+  scale_x_continuous("Distance (km)", limits=c(0,30), breaks=seq(0,30,5), expand=c(0,0)) +
+  scale_y_continuous("Δ P(same chain) (<5y & 5-10y vs >10y)", limits=c(-0.02,0.1), expand=c(0,0)) +
+  scale_colour_manual("Age group", values=c("<5y"="#1b9e77","5-10y"="#d95f02")) +
+  scale_fill_manual(guide="none", values=c("<5y"="#1b9e77","5-10y"="#d95f02")) +
+  scale_linetype_manual("Age group", values=c("<5y"="solid","5-10y"="dashed")) +
+  theme_minimal(base_size=14) +
+  theme(
+    panel.grid = element_blank(),
+    axis.line  = element_line(size=0.6, colour="black"),
+    axis.title = element_text(face="bold")
+  )
+```
+
+#glm for fixed focal case 
+```{r}
+ordered_age_pairs <- ordered_age_pairs %>%
+  filter(!is.na(spatial_dist)) %>%
+  mutate(
+    age_group = factor(age_group, levels = c(">10y", "5-10y", "<5y")),
+    log_dist  = log(spatial_dist + 1e-6)
+  )
+
+glm_age_log <- glm(
+  same_chain ~ age_group * log_dist,
+  data   = ordered_age_pairs,
+  family = binomial(link = "logit")
+)
+
+vcov_cl <- cluster.vcov(
+  glm_age_log,
+  cluster = list(
+    ordered_age_pairs$sample1,
+    ordered_age_pairs$sample2
+  )
+)
+
+age_or_table_log_robust <- broom::tidy(
+  glm_age_log,
+  conf.int    = TRUE,
+  exponentiate= TRUE,
+  vcov.       = vcov_cl
+) %>%
+  mutate(
+    OR      = sprintf("%.3f", estimate),
+    `95% CI`= sprintf("[%.3f–%.3f]", conf.low, conf.high),
+    `P-value` = ifelse(p.value < 0.001, "<0.001", sprintf("%.3f", p.value))
+  ) %>%
+  select(
+    Term    = term,
+    `OR`    = OR,
+    `95% CI`= `95% CI`,
+    `P-value`
+  )
+
+age_or_table_log_robust
+
+```
+
+#test diagnostics 
+```{r}
+mf <- model.frame(glm_age_log)
+
+response <- model.response(mf)               
+pred_prob <- predict(glm_age_log, newdata = mf, type = "response")
+
+roc_obj <- roc(response, pred_prob)
+roc_obj
+
+brier <- mean((pred_prob - response)^2)
+brier
+```
+
+
+####ASSORTATIVITY 
+
+####2 year Y/N analysis 
+```{r}
+age_data_df <- age_data_df %>%
+  mutate(
+    log_dist        = log(spatial_dist + 1e-6),
+    age_diff        = abs(age1 - age2),
+    within_2yrs_num = as.integer(age_diff <= 2),              
+    within_2yrs_yn  = if_else(age_diff <= 2, "yes", "no")     
+  )
+
+age_data_df %>%
+  count(within_2yrs_yn)
+```
+##IMPLEMENT THE NEW ASSORTATIVITY MODEL WITH BOOTSTRAP
+
+
+# 1) Define the formula
+#fmla <- same_chain ~ within_2yrs_num * log_dist + serotype
+
+# 2) Fit the logistic regression
+#glm_model <- glm(formula = fmla, data = age_data_df, family  = binomial(link = "logit"))
+
+#Fit model and do bootstrap 
+```{r}
+shelf(dplyr)
+shelf(speedglm)
+shelf(tibble)
+
+set.seed(2025)
+
+df0 <- age_data_df %>%
+  filter(!is.na(spatial_dist)) %>%
+  mutate(
+    log_dist        = log(spatial_dist + 1e-6),
+    age_diff        = abs(age1 - age2),
+    within_2yrs_num = as.integer(age_diff <= 2),
+    serotype        = factor(serotype)
+  )
+
+fmla <- same_chain ~ within_2yrs_num * (log_dist + serotype)
+
+two_way_boot <- function(data, formula, cl1, cl2, B = 500) {
+  ids1 <- unique(data[[cl1]])
+  ids2 <- unique(data[[cl2]])
+  n1   <- length(ids1)
+  n2   <- length(ids2)
+  
+  base_fit <- speedglm(formula, data, family=binomial(link="logit"), accel=TRUE)
+  coef_names <- names(coef(base_fit))
+  p          <- length(coef_names)
+  
+  boots <- matrix(NA, nrow = B, ncol = p, dimnames = list(NULL, coef_names))
+  
+  for (b in seq_len(B)) {
+    draw1 <- sample(ids1, size = n1, replace = TRUE)
+    draw2 <- sample(ids2, size = n2, replace = TRUE)
+    
+    boot_df <- data %>%
+      filter( .data[[cl1]] %in% draw1,
+              .data[[cl2]] %in% draw2 )
+    
+    fit_b <- speedglm(
+      formula = formula,
+      data    = boot_df,
+      family  = binomial(link = "logit"),
+      accel   = TRUE
+    )
+    
+    boots[b, ] <- coef(fit_b)
+  }
+  
+  ci_log   <- apply(boots, 2, quantile, probs = c(0.025, 0.975))
+  orig_log <- coef(base_fit)
+  
+  tibble(
+    Term     = coef_names,
+    OR       = sprintf("%.3f", exp(orig_log)),
+    `95% CI` = sprintf("[%.3f–%.3f]",
+                       exp(ci_log[1, ]),
+                       exp(ci_log[2, ]))
+  )
+}
+
+reg_table <- two_way_boot(df0, fmla, "sample1", "sample2", B = 500)
+print(reg_table)
+```
+
+#Final table marking significance 
+```{r}
+reg_table_sig <- reg_table %>%
+  mutate(CI_clean = gsub("^\\[|\\]$", "", `95% CI`)) %>%
+  separate(CI_clean, into = c("lo", "hi"), sep = "–", convert = TRUE) %>%
+  mutate(significant = if_else(lo > 1 | hi < 1, "yes", "no")) %>%
+  dplyr::select(Term, OR, `95% CI`, significant)
+
+
+print(reg_table_sig)
+```
+
+```{r}
+cat(
+  "AUC =",
+  round(
+    pROC::auc(
+      df0$same_chain,
+      predict(
+        speedglm(formula = fmla, data = df0, family = binomial(link = "logit"), accel = TRUE),
+        newdata = df0,
+        type    = "response"
+      )
+    ),
+    3
+  ),
+  "\n"
+)
+```
+
+
+
+
