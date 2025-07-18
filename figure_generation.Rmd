@@ -1,0 +1,714 @@
+---
+title: "figure_generation"
+author:
+date: "`r Sys.Date()`"
+output: html_document
+---
+#Load libraries
+```{r}
+library(librarian)
+shelf(dplyr)
+shelf(tidyr)
+shelf(tibble)
+shelf(ggplot2)
+shelf(stringr)
+shelf(scales)
+shelf(patchwork)
+shelf(binom)
+shelf(ape)
+shelf
+```
+
+#Find common samples between all three matrices created 
+```{r}
+#DENV4 COMMON LENGTHS 
+#105 out of 119
+d4_patristic_cophen_id  <- rownames(d4_patristic_cophen)
+d4_dist_df_id <- rownames(d4_distance)
+d4_time_df_id <-rownames(d4_time)
+common_ids_4 <- Reduce(intersect, list(d4_patristic_cophen_id, d4_dist_df_id, d4_time_df_id))
+length(common_ids_4)
+
+#DENV3 COMMON LENGTHS 
+#140 out of 159
+d3_patristic_cophen_id  <- rownames(d3_patristic_cophen)
+d3_dist_df_id <- rownames(d3_distance)
+d3_time_df_id <-rownames(d3_time)
+common_ids_3 <- Reduce(intersect, list(d3_patristic_cophen_id, d3_dist_df_id, d3_time_df_id))
+length(common_ids_3)
+
+#DENV1 COMMON LENGTHS 
+#264 out of 291
+d1_patristic_cophen_id  <- rownames(d1_patristic_cophen)
+d1_dist_df_id <- rownames(d1_distance)
+d1_time_df_id <-rownames(d1_time)
+common_ids_1 <- Reduce(intersect, list(d1_patristic_cophen_id, d1_dist_df_id, d1_time_df_id))
+length(common_ids_1)
+
+#DENV2 COMMON LENGTHS 
+#267 out of 282
+d2_patristic_cophen_id  <- rownames(d2_patristic_cophen)
+d2_dist_df_id <- rownames(d2_distance)
+d2_time_df_id <-rownames(d2_time)
+common_ids_2 <- Reduce(intersect, list(d2_patristic_cophen_id, d2_dist_df_id, d2_time_df_id))
+length(common_ids_2)
+```
+
+#Subset Matrices
+```{r}
+#Subset the matrices now D4
+d4_patristic_sub <- d4_patristic_cophen[common_ids_4, common_ids_4]
+d4_dist_sub      <- d4_distance[common_ids_4, common_ids_4]
+d4_time_sub      <- d4_time[common_ids_4, common_ids_4]
+
+#Subset the matrices now D3
+d3_patristic_sub <- d3_patristic_cophen[common_ids_3, common_ids_3]
+d3_dist_sub      <- d3_distance[common_ids_3, common_ids_3]
+d3_time_sub      <- d3_time[common_ids_3, common_ids_3]
+
+#Subset the matrices now D1
+d1_patristic_sub <- d1_patristic_cophen[common_ids_1, common_ids_1]
+d1_dist_sub      <- d1_distance[common_ids_1, common_ids_1]
+d1_time_sub      <- d1_time[common_ids_1, common_ids_1]
+
+#Subset the matrices now D2
+d2_patristic_sub <- d2_patristic_cophen[common_ids_2, common_ids_2]
+d2_dist_sub      <- d2_distance[common_ids_2, common_ids_2]
+d2_time_sub      <- d2_time[common_ids_2, common_ids_2]
+```
+
+#Source helper merging data frame 
+```{r}
+source("script/clean/helper_scripts/helper_merging_df.R")
+```
+
+#Pairs DF Formation
+```{r}
+d4_pairs_df <- fc_combined_df(d4_patristic_sub,d4_dist_sub,d4_time_sub)
+d3_pairs_df <- fc_combined_df(d3_patristic_sub,d3_dist_sub,d3_time_sub)
+d1_pairs_df <- fc_combined_df(d1_patristic_sub,d1_dist_sub,d1_time_sub)
+d2_pairs_df <- fc_combined_df(d2_patristic_sub,d2_dist_sub,d2_time_sub)
+```
+
+#Add a generation time axis 
+```{r}
+generation_time_years <- 20 / 365  #0.05479 years per dengue generation for 20 days 
+```
+
+
+#Plot for Figure 1G: Spatial Distance (km) vs Evolutionary Time (years) for DENV1 serotype 
+
+#Overall Median Line for all plots 
+```{r}
+fc_median_pd <- function(df) {
+  df %>%
+    pull(spatial_dist) %>%
+    median(na.rm = TRUE)
+}
+
+d1_overall_median <- fc_median_pd(d1_pairs_df)
+d2_overall_median <- fc_median_pd(d2_pairs_df)
+d3_overall_median <- fc_median_pd(d3_pairs_df)
+d4_overall_median <- fc_median_pd(d4_pairs_df)
+
+```
+
+#Source helper function
+```{r}
+source("script/clean/helper_scripts/helper_1G_binning.R")
+```
+
+#D1
+```{r}
+d1_binned_df <- fc_1G_binning(d1_pairs_df) 
+
+d1_evol_time <- ggplot(d1_binned_df, aes(x = evolutionary_time, y = spatial_mean)) +
+  geom_ribbon(aes(ymin = spatial_lower, ymax = spatial_upper), fill = "lightblue", alpha = 0.4) +
+  geom_point(color = "blue", size = 1.5) +
+  geom_line(color = "blue") +
+  geom_hline(yintercept = d1_overall_median, linetype = "dashed", color = "black") +
+  
+  scale_x_continuous(
+    name = "Evolutionary time (years)",
+    sec.axis = sec_axis(
+      trans = ~ . / generation_time_years, 
+      name = "Transmission generations (No.)"
+    )
+  ) +
+  theme_minimal() +
+  theme(
+    axis.title.x.top = element_text(margin = margin(b = 10), size = 12),
+    axis.text.x.top = element_text(size = 10),
+    axis.line.x.top = element_line(color = "black")
+  ) +
+  
+  labs(
+    y = "Spatial distance (km)"
+  )
+
+print(d1_evol_time)
+#ggsave("d1_1G.pdf", plot = d1_evol_time, device = "pdf", width = 8, height = 6)
+```
+
+#D4
+```{r}
+d4_binned_df <-  fc_1G_binning(d4_pairs_df) 
+
+d4_evol_time <- ggplot(d4_binned_df, aes(x = evolutionary_time, y = spatial_mean)) +
+  geom_ribbon(aes(ymin = spatial_lower, ymax = spatial_upper), fill = "lightblue", alpha = 0.4) +
+  geom_point(color = "blue", size = 1.5) +
+  geom_line(color = "blue") +
+  geom_hline(yintercept = d4_overall_median, linetype = "dashed", color = "black") +
+
+  scale_x_continuous(
+    name = "Evolutionary time (years)",
+    sec.axis = sec_axis(
+      trans = ~ . / generation_time_years,
+      name = "Transmission generations (No.)"
+    )
+  ) +
+
+  theme_minimal() +
+  theme(
+    axis.title.x.top = element_text(margin = margin(b = 10), size = 12),
+    axis.text.x.top = element_text(size = 10),
+    axis.line.x.top = element_line(color = "black")
+  ) +
+
+  labs(
+    y = "Spatial distance (km)"
+  )
+
+print(d4_evol_time)
+
+#ggsave("d4_1G.pdf", plot = d4_evol_time, device = "pdf", width = 8, height = 6)
+```
+
+#D3 
+```{r}
+d3_binned_df <- fc_1G_binning(d3_pairs_df) 
+
+d3_evol_time <- ggplot(d3_binned_df, aes(x = evolutionary_time, y = spatial_mean)) +
+  geom_ribbon(aes(ymin = spatial_lower, ymax = spatial_upper), fill = "lightblue", alpha = 0.4) +
+  geom_point(color = "blue", size = 1.5) +
+  geom_line(color = "blue") +
+  geom_hline(yintercept = d3_overall_median, linetype = "dashed", color = "black") +
+  
+  scale_x_continuous(
+    name = "Evolutionary time (years)",
+    sec.axis = sec_axis(
+      trans = ~ . / generation_time_years, 
+      name = "Transmission generations (No.)"
+    )
+  ) +
+  theme_minimal() +
+  theme(
+    axis.title.x.top = element_text(margin = margin(b = 10), size = 12),
+    axis.text.x.top = element_text(size = 10),
+    axis.line.x.top = element_line(color = "black")
+  ) +
+  
+  labs(
+    y = "Spatial distance (km)"
+  )
+
+print(d3_evol_time)
+#ggsave("d3_1G.pdf", plot = d3_evol_time, device = "pdf", width = 8, height = 6)
+```
+
+#D2 
+```{r}
+d2_binned_df <- fc_1G_binning(d2_pairs_df) 
+
+d2_evol_time <- ggplot(d2_binned_df, aes(x = evolutionary_time, y = spatial_mean)) +
+  geom_ribbon(aes(ymin = spatial_lower, ymax = spatial_upper), fill = "lightblue", alpha = 0.4) +
+  geom_point(color = "blue", size = 1.5) +
+  geom_line(color = "blue") +
+  geom_hline(yintercept = d2_overall_median, linetype = "dashed", color = "black") +
+  scale_x_continuous(
+    name = "Evolutionary time (years)",
+    sec.axis = sec_axis(
+      trans = ~ . / generation_time_years, 
+      name = "Transmission generations (No.)"
+    )
+  ) +
+  theme_minimal() +
+  theme(
+    axis.title.x.top = element_text(margin = margin(b = 10), size = 12),
+    axis.text.x.top = element_text(size = 10),
+    axis.line.x.top = element_line(color = "black")
+  ) +
+  labs(
+    y = "Spatial distance (km)"
+  )
+print(d2_evol_time)
+#ggsave("d2_1G.pdf", plot = d2_evol_time, device = "pdf", width = 8, height = 6)
+```
+
+#Combined Figure 1G
+```{r}
+#edit each binned df with a name 
+d3_binned_df <- d3_binned_df %>%
+  mutate(serotype = "DENV-3")
+
+d4_binned_df <- d4_binned_df %>%
+  mutate(serotype = "DENV-4")
+
+d1_binned_df <- d1_binned_df %>%
+  mutate(serotype = "DENV-1")
+
+d2_binned_df <- d2_binned_df %>%
+  mutate(serotype = "DENV-2")
+
+#make a total binned data frame 
+combined_binned_df <- bind_rows(d3_binned_df, d4_binned_df, d1_binned_df, d2_binned_df)
+
+#make a total median 
+combined_overall_median <- bind_rows(
+  d1_pairs_df,
+  d2_pairs_df,
+  d3_pairs_df,
+  d4_pairs_df
+) %>%
+  pull(spatial_dist) %>%
+  median(na.rm = TRUE)
+
+
+combined_evol_time <- ggplot(combined_binned_df, aes(x = evolutionary_time, y = spatial_mean, color = serotype, fill = serotype)) +
+  geom_ribbon(aes(ymin = spatial_lower, ymax = spatial_upper), alpha = 0.3, color = NA) +
+  geom_line(size = 1) +
+  geom_point(size = 1.5) +
+  geom_hline(yintercept = combined_overall_median, linetype = "dashed", color = "black") +
+  
+  # Updated color and fill manual scales to include DENV-2 (set to purple here)
+  scale_color_manual(values = c("DENV-3" = "blue", "DENV-4" = "darkred", "DENV-1" = "darkgreen", "DENV-2" = "purple")) +
+  scale_fill_manual(values = c("DENV-3" = "blue", "DENV-4" = "darkred", "DENV-1" = "darkgreen", "DENV-2" = "purple")) +
+  
+  scale_x_continuous(
+    name = "Evolutionary time (years)",
+    sec.axis = sec_axis(
+      trans = ~ . / generation_time_years,
+      name = "Transmission generations (No.)"
+    )
+  ) +
+  
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.title.x.top = element_text(margin = margin(b = 10), size = 12),
+    axis.text.x.top = element_text(size = 10),
+    axis.line.x.top = element_line(color = "black"),
+    legend.title = element_blank(),
+    legend.position = "top"
+  ) +
+  
+  labs(
+    y = "Spatial distance (km)"
+  )
+
+print(combined_evol_time)
+
+#ggsave("combined_1G.pdf", plot = combined_evol_time, device = "pdf", width = 8, height = 6)
+```
+
+##Plot for Figure 2A: Proportion Same Chain vs Distance (km) for DENV1 serotype 
+
+#Source Same Chain
+```{r}
+source("script/clean/helper_scripts/helper_same_chain.R")
+```
+
+#Function for same chain 
+```{r}
+d1_pairs_df <- fc_same_chain(d1_pairs_df)
+d2_pairs_df <- fc_same_chain(d2_pairs_df)
+d3_pairs_df <- fc_same_chain(d3_pairs_df)
+d4_pairs_df <- fc_same_chain(d4_pairs_df)
+```
+
+#Total Same Chains
+```{r}
+sum(d1_pairs_df$same_chain, na.rm = TRUE)
+sum(d2_pairs_df$same_chain, na.rm = TRUE)
+sum(d3_pairs_df$same_chain, na.rm = TRUE)
+sum(d4_pairs_df$same_chain, na.rm = TRUE)
+```
+#Source 2A Binning Function
+```{r}
+source("script/clean/helper_scripts/helper_2A_binning.R")
+```
+
+#Make all the Binned Data Frames 
+```{r}
+d1_binned_chain_df <- fc_2A_binning(d1_pairs_df)
+d2_binned_chain_df <- fc_2A_binning(d2_pairs_df)
+d3_binned_chain_df <- fc_2A_binning(d3_pairs_df)
+d4_binned_chain_df <- fc_2A_binning(d4_pairs_df)
+```
+
+#DENV3 Graph Attempt
+```{r}
+d3_prop_chain <- ggplot(
+    d3_binned_chain_df,
+    aes(x = bin_cutoff, y = prop_same_chain)
+  ) +
+  geom_errorbar(
+    aes(ymin = lower, ymax = upper),
+    width = 0.2, color = "purple"
+  ) +
+  geom_point(
+    shape = 21, size = 3, stroke = 1.2,
+    color = "purple", fill = "white"
+  ) +
+  scale_y_continuous(
+    name   = "Proportion Same Chain",
+    breaks = seq(0, 1, by = 0.02),
+    labels = number_format(accuracy = 0.01),
+    expand = expansion(mult = c(0, 0.05))
+  ) +
+  scale_x_continuous(
+    name   = "Distance (km)",
+    limits = c(0, 30),
+    breaks = seq(0, 30, by = 5),
+    labels = number_format(accuracy = 1)
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid.major.y = element_line(color = "gray90"),
+    panel.grid.minor.y = element_line(color = "gray95"),
+    panel.grid.x       = element_blank(),
+    axis.line          = element_line(size = 0.6, color = "black"),
+    axis.ticks         = element_line(size = 0.6, color = "black"),
+    axis.title         = element_text(size = 14, face = "bold"),
+    axis.text.x        = element_text(angle = 45, hjust = 1),
+    axis.text          = element_text(size = 12),
+
+    # Publication‐ready title styling
+    plot.title         = element_text(
+                           hjust = 0.5,          # center
+                           face  = "bold",       # bold
+                           size  = 18            # larger size
+                         )
+  ) +
+  labs(
+    title = "DENV-3",
+    y     = "Proportion Same Chain"
+  )
+
+print(d3_prop_chain)
+```
+
+
+#DENV4 Graph Attempt
+```{r}
+d4_prop_chain <- ggplot(
+    d4_binned_chain_df,
+    aes(x = bin_cutoff, y = prop_same_chain)
+  ) +
+  geom_errorbar(
+    aes(ymin = lower, ymax = upper),
+    width = 0.2, color = "purple"
+  ) +
+  geom_point(
+    shape = 21, size = 3, stroke = 1.2,
+    color = "purple", fill = "white"
+  ) +
+  scale_y_continuous(
+    name   = "Proportion Same Chain",
+    breaks = seq(0, 1, by = 0.01),
+    labels = number_format(accuracy = 0.01),
+    expand = expansion(mult = c(0, 0.05))
+  ) +
+  scale_x_continuous(
+    name   = "Distance (km)",
+    limits = c(0, 30),
+    breaks = seq(0, 30, by = 5),
+    labels = number_format(accuracy = 1)
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid.major.y = element_line(color = "gray90"),
+    panel.grid.minor.y = element_line(color = "gray95"),
+    panel.grid.x       = element_blank(),
+    axis.line          = element_line(size = 0.6, color = "black"),
+    axis.ticks         = element_line(size = 0.6, color = "black"),
+    axis.title         = element_text(size = 14, face = "bold"),
+    axis.text.x        = element_text(angle = 45, hjust = 1),
+    axis.text          = element_text(size = 12),
+    plot.title         = element_text(
+                           hjust = 0.5,          # center
+                           face  = "bold",       # bold
+                           size  = 18            # larger size
+                         )
+  ) +
+  labs(
+    title = "DENV-4",
+    y     = "Proportion Same Chain"
+  )
+
+print(d4_prop_chain)
+#ggsave("d4_2A.pdf", plot = d4_prop_chain, device = "pdf", width = 8, height = 6)
+```
+
+#DENV1 Graph Attempt
+```{r}
+d1_prop_chain <- ggplot(
+    d1_binned_chain_df,
+    aes(x = bin_cutoff, y = prop_same_chain)
+  ) +
+  geom_errorbar(
+    aes(ymin = lower, ymax = upper),
+    width = 0.2, color = "purple"
+  ) +
+  geom_point(
+    shape = 21, size = 3, stroke = 1.2,
+    color = "purple", fill = "white"
+  ) +
+  scale_y_continuous(
+    name   = "Proportion Same Chain",
+    breaks = seq(0, 1, by = 0.01),
+    labels = number_format(accuracy = 0.01),
+    expand = expansion(mult = c(0, 0.05))
+  ) +
+  scale_x_continuous(
+    name   = "Distance (km)",
+    limits = c(0, 30),
+    breaks = seq(0, 30, by = 5),
+    labels = number_format(accuracy = 1)
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid.major.y = element_line(color = "gray90"),
+    panel.grid.minor.y = element_line(color = "gray95"),
+    panel.grid.x       = element_blank(),
+    axis.line          = element_line(size = 0.6, color = "black"),
+    axis.ticks         = element_line(size = 0.6, color = "black"),
+    axis.title         = element_text(size = 14, face = "bold"),
+    axis.text.x        = element_text(angle = 45, hjust = 1),
+    axis.text          = element_text(size = 12),
+    plot.title         = element_text(
+                           hjust = 0.5,          # center
+                           face  = "bold",       # bold
+                           size  = 18            # larger size
+                         )
+  ) +
+  labs(
+    title = "DENV-1",
+    y     = "Proportion Same Chain"
+  )
+
+print(d1_prop_chain)
+```
+
+#DENV2 Graph Attempt
+```{r}
+d2_prop_chain <- ggplot(
+    d2_binned_chain_df,
+    aes(x = bin_cutoff, y = prop_same_chain)
+  ) +
+  geom_errorbar(
+    aes(ymin = lower, ymax = upper),
+    width = 0.2, color = "purple"
+  ) +
+  geom_point(
+    shape = 21, size = 3, stroke = 1.2,
+    color = "purple", fill = "white"
+  ) +
+  scale_y_continuous(
+    name = "Proportion Same Chain",
+    limits = c(0, 0.03),
+    breaks = seq(0, 0.03, by = 0.005),
+    expand = c(0, 0)
+  ) +
+  scale_x_continuous(
+    name   = "Distance (km)",
+    limits = c(0, 30),
+    breaks = seq(0, 30, by = 5),
+    labels = number_format(accuracy = 1)
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid.major.y = element_line(color = "gray90"),
+    panel.grid.minor.y = element_line(color = "gray95"),
+    panel.grid.x       = element_blank(),
+    axis.line          = element_line(size = 0.6, color = "black"),
+    axis.ticks         = element_line(size = 0.6, color = "black"),
+    axis.title         = element_text(size = 14, face = "bold"),
+    axis.text.x        = element_text(angle = 45, hjust = 1),
+    axis.text          = element_text(size = 12),
+    plot.title         = element_text(
+                           hjust = 0.5,          # center
+                           face  = "bold",       # bold
+                           size  = 18            # larger size
+                         )
+  ) +
+  labs(
+    title = "DENV-2",
+    y     = "Proportion Same Chain"
+  )
+
+print(d2_prop_chain)
+
+#ggsave("d2_2A.pdf", plot = d2_prop_chain, device = "pdf", width = 8, height = 6)
+```
+
+#Combined figure 2A
+```{r}
+d3_binned_chain_df <- d3_binned_chain_df %>% mutate(serotype = "DENV-3")
+d4_binned_chain_df <- d4_binned_chain_df %>% mutate(serotype = "DENV-4")
+d1_binned_chain_df <- d1_binned_chain_df %>% mutate(serotype = "DENV-1")
+d2_binned_chain_df <- d2_binned_chain_df %>% mutate(serotype = "DENV-2")
+
+combined_df <- bind_rows(d3_binned_chain_df, d4_binned_chain_df,
+                         d1_binned_chain_df, d2_binned_chain_df)
+
+max_dist_combined <- max(combined_df$bin_mid, na.rm = TRUE)
+```
+
+```{r}
+combined_prop_chain <- ggplot(combined_df, aes(x = bin_cutoff, y = prop_same_chain,
+                                               color = serotype, fill = serotype)) +
+  geom_point(aes(shape = serotype), size = 3, stroke = 1.2) +
+  geom_errorbar(aes(ymin = lower, ymax = upper), width = 0.2, alpha = 0.8) +
+  
+  scale_y_continuous(
+    name   = "Proportion Same Chain",
+    breaks = seq(0, 1, by = 0.02),
+    labels = scales::number_format(accuracy = 0.01),
+    expand = expansion(mult = c(0, 0.05))
+  ) +
+  scale_x_continuous(
+    name   = "Distance (km)",
+    limits = c(0, 30),
+    breaks = seq(0, 30, by = 5),
+    labels = scales::number_format(accuracy = 1)
+  ) +
+  
+  scale_color_manual(values = c(
+    "DENV-3" = "blue", 
+    "DENV-4" = "darkred", 
+    "DENV-1" = "darkgreen", 
+    "DENV-2" = "purple"
+  )) +
+  scale_fill_manual(values = c(
+    "DENV-3" = "white", 
+    "DENV-4" = "white", 
+    "DENV-1" = "white", 
+    "DENV-2" = "white"
+  )) +
+  scale_shape_manual(values = c(
+    "DENV-3" = 21, 
+    "DENV-4" = 22, 
+    "DENV-1" = 23, 
+    "DENV-2" = 24
+  )) +
+  
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid        = element_blank(),
+    axis.line         = element_line(size = 0.6, color = "black"),
+    axis.ticks        = element_line(size = 0.6, color = "black"),
+    axis.title        = element_text(size = 14, face = "plain", color = "black"),
+    axis.text         = element_text(size = 12, face = "plain", color = "black"),
+    axis.text.x       = element_text(angle = 45, hjust = 1),
+    legend.position       = c(0.95, 0.95),
+    legend.justification  = c(1, 1),
+    legend.title          = element_blank(),
+    legend.text           = element_text(color = "black"),
+    legend.background     = element_blank(),
+    plot.margin           = margin(8, 8, 8, 8)
+  ) +
+  labs(
+    y     = "Proportion Same Chain"
+  )
+
+combined_prop_chain
+```
+
+
+
+```{r}
+library(dplyr)
+library(purrr)
+library(tidyr)
+library(minpack.lm)
+
+fit_decay <- function(df){
+  start_vals <- list(
+    c = min(df$prop_same_chain, na.rm=TRUE),
+    a = max(df$prop_same_chain, na.rm=TRUE) - min(df$prop_same_chain, na.rm=TRUE),
+    b = 0.1
+  )
+  nlsLM(
+    prop_same_chain ~ c + a * exp(-b * bin_cutoff),
+    data    = df,
+    start   = start_vals,
+    weights = 1 / (df$se^2)
+  )
+}
+
+serotype_summary <- combined_df %>%
+  group_by(serotype) %>%
+  nest() %>%
+  mutate(
+    model = map(data, fit_decay),
+    params = map(model, ~{
+      cf <- coef(.x)
+      CI <- confint(.x, level=0.95)
+      bind_rows(
+        tibble(
+          parameter = c("c","a","b"),
+          estimate = cf[c("c","a","b")],
+          lower    = CI[c("c","a","b"), 1],
+          upper    = CI[c("c","a","b"), 2]
+        ),
+        tibble(
+          parameter = "p0",
+          estimate = cf["c"] + cf["a"],
+          lower    = CI["c",1] + CI["a",1],
+          upper    = CI["c",2] + CI["a",2]
+        ),
+        tibble(
+          parameter    = "half_distance",
+          estimate    = log(2)/cf["b"],
+          # invert b‐CI for half‐distance
+          lower       = log(2)/CI["b", 2],
+          upper       = log(2)/CI["b", 1]
+        )
+      )
+    })
+  ) %>%
+  select(serotype, params) %>%
+  unnest(params)
+
+serotype_summary %>% 
+  arrange(serotype, parameter) %>%
+  mutate_at(vars(estimate:upper), ~round(., 4)) %>%
+  print()
+
+
+```
+#Percent Decrease Calculations EVEN ALL SEROTYPES
+```{r}
+library(dplyr)
+
+serotype_params <- tibble::tribble(
+  ~serotype,       ~b,      ~b_low,   ~b_high,
+  "All serotypes", 0.1127,  0.1091,   0.1165,
+  "DENV-1",        0.1113,  0.1066,   0.1162,
+  "DENV-2",        0.1083,  0.1039,   0.1129,
+  "DENV-3",        0.0973,  0.0936,   0.1011,
+  "DENV-4",        0.1410,  0.1321,   0.1504
+)
+
+serotype_params %>% 
+  mutate(
+    loss_per_km      = (1 - exp(-b))      * 100,
+    loss_per_km_low  = (1 - exp(-b_high)) * 100,
+    # CI upper bound (best‐case: use b_low)
+    loss_per_km_high = (1 - exp(-b_low))  * 100
+  ) %>% 
+  select(serotype, loss_per_km, loss_per_km_low, loss_per_km_high) %>% 
+  mutate(across(-serotype, ~round(.x, 2)))
+
+```
+

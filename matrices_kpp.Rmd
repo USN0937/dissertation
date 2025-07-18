@@ -1,0 +1,161 @@
+---
+title: "matrices_kpp"
+author: 
+date: "`r Sys.Date()`"
+output: html_document
+---
+#Load Packages
+```{r}
+library(librarian)
+shelf(sf,
+      data.table,
+      ape,
+      ggtree,
+      phangorn,
+      TreeTools,
+      dplyr,
+      tidyr,
+      tibble, 
+      readxl,
+      stringr,
+      tidyverse,
+      BiocManager,
+      treeio)
+```
+
+#MetaData Loading 
+```{r}
+#metadata
+kpp_data <- read.csv("data/raw/kpp_data.csv", stringsAsFactors = FALSE)
+
+#MAPPING DATA FOR NAMES
+mapping_data_1 <- read_excel("data/raw/new_kpp_mapping.xlsx", sheet = 1, col_names = TRUE)
+mapping_data_2 <- read_excel(
+  path       = "data/raw/kpp_packing_list.xlsx",
+  sheet      = 1,
+  skip       = 1,        
+  col_names  = TRUE)
+mapping_data_list <- list(mapping_data_1,mapping_data_2)
+```
+
+#Standardize kpp_data timing 
+```{r}
+#make the timestamps and the dates standardized 
+kpp_data$admitdate <- as.POSIXct(kpp_data$admitdate, 
+                                 format = "%Y-%m-%dT%H:%M:%S", 
+                                 tz = "UTC")
+
+kpp_data$admitdate <- as.Date(kpp_data$admitdate, format="%Y-%m-%d")
+```
+
+#Make data subsets for computational efficiency
+```{r}
+# Filter and save for DEN1
+den1_data <- kpp_data %>% filter(DENV.PCR == "DEN1")
+
+# Filter and save for DEN2
+den2_data <- kpp_data %>% filter(DENV.PCR == "DEN2")
+
+# Filter and save for DEN3
+den3_data <- kpp_data %>% filter(DENV.PCR == "DEN3")
+
+# Filter and save for DEN4 (if it exists)
+den4_data <- kpp_data %>% filter(DENV.PCR == "DEN4")
+```
+
+##HISTOGRAM TIME 
+```{r}
+#D1
+hist(den1_data$study.year,
+     main = "DENV 1 Distribution of Study Year",
+     xlab = "Year",
+     breaks = 30)
+
+median(den1_data$study.year) #2008
+
+#D2
+hist(den2_data$study.year,
+     main = "DENV 2 Distribution of Study Year",
+     xlab = "Year",
+     breaks = 30)
+
+median(den2_data$study.year) #2009
+
+#D3
+hist(den3_data$study.year,
+     main = "DENV 3 Distribution of Study Year",
+     xlab = "Year",
+     breaks = 30)
+
+median(den3_data$study.year) #2013
+
+#D4
+hist(den4_data$study.year,
+     main = "DENV 4 Distribution of Study Year",
+     xlab = "Year",
+     breaks = 30)
+
+median(den4_data$study.year) #2015
+```
+
+
+#DISTANCE
+#Source function for calculating euclidean distance
+```{r}
+source("script/clean/helper_scripts/helper_euclidean_distance.R")
+```
+
+#Calculate euclidean distance for all the serotypes 
+```{r}
+d1_distance <- fc_euclidean_dist(den1_data)
+d2_distance <- fc_euclidean_dist(den2_data)
+d3_distance <- fc_euclidean_dist(den3_data)
+d4_distance <- fc_euclidean_dist(den4_data)
+```
+
+#TIME
+
+#Source function for calculating time difference 
+```{r}
+source("script/clean/helper_scripts/helper_time_difference.R")
+```
+
+#Calculate time difference in days for all the serotypes 
+```{r}
+d1_time <- fc_time_difference(den1_data)
+d2_time <- fc_time_difference(den2_data)
+d3_time <- fc_time_difference(den3_data)
+d4_time <- fc_time_difference(den4_data)
+```
+
+
+#PATRISTIC DISTANCES
+
+#Load trees
+```{r}
+#TREES REPLACED
+d3_kpp_thailand_consensus <- read.beast("data/beast_output/d3_st/d3_st_final.tree")
+d4_kpp_thailand_consensus <- read.beast("data/beast_output/d4_st/d4_st_final.tree")
+d1_kpp_thailand_consensus <- read.beast("data/beast_output/d1_st/d1_st_final.tree")
+d2_kpp_thailand_consensus <- read.beast("data/beast_output/d2_st/d2_st_final.tree")
+```
+
+#Source function for calculating cophenetic partistic distance
+```{r}
+source("script/clean/helper_scripts/helper_patristic_cophyletic.R")
+```
+
+#Load the patristic data frames 
+#With consensus trees 
+```{r}
+d4_patristic_cophen <- fc_patristic_consensus(d4_kpp_thailand_consensus, mapping_data_1)
+d3_patristic_cophen <- fc_patristic_consensus(d3_kpp_thailand_consensus, mapping_data_1)
+d1_patristic_cophen <- fc_patristic_consensus(d1_kpp_thailand_consensus, mapping_data_1)
+d2_patristic_cophen <- fc_patristic_consensus(d2_kpp_thailand_consensus, mapping_data_1)
+```
+
+
+
+
+
+

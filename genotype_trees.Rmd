@@ -1,0 +1,190 @@
+---
+title: "genotype_trees"
+author: 
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+#Load necessay libraries 
+```{r}
+library(librarian)
+shelf(ape)
+shelf(ggtree)
+shelf(dplyr)
+shelf(treeio)
+shelf(ape)
+shelf(ggtree)
+shelf(dplyr)
+shelf(cluster)
+shelf(dynamicTreeCut)
+shelf(ggsci)      
+shelf(cowplot)    
+```
+
+#Load Consensus Tree
+```{r}
+#TREES REPLACED
+d3_kpp_thailand_consensus <- read.beast("data/beast_output/d3_st/d3_st_final.tree")
+d4_kpp_thailand_consensus <- read.beast("data/beast_output/d4_st/d4_st_final.tree")
+d1_kpp_thailand_consensus <- read.beast("data/beast_output/d1_st/d1_st_final.tree")
+d2_kpp_thailand_consensus <- read.beast("data/beast_output/d2_st/d2_st_final.tree")
+```
+
+#Visualize DENV4 tree
+```{r}
+d4_tree <- ggtree(d4_kpp_thailand_consensus) +
+  geom_tiplab(size = 1.5)
+
+d4_tree
+```
+
+#Visualize DENV3 tree
+```{r}
+d3_tree <- ggtree(d3_kpp_thailand_consensus) +
+  geom_tiplab(size = 1.5)
+
+d3_tree
+```
+
+#Visualize DENV2 tree
+```{r}
+d2_tree <- ggtree(d2_kpp_thailand_consensus) +
+  geom_tiplab(size = 1.0)
+
+d2_tree
+```
+
+#Visualize DENV1 tree
+```{r}
+d1_tree <- ggtree(d1_kpp_thailand_consensus) +
+  geom_tiplab(size = 1.0)
+
+d1_tree
+```
+
+#PHYLO TRANSFORMATION
+```{r}
+d4_phylo <- as.phylo(d4_kpp_thailand_consensus)
+d3_phylo <- as.phylo(d3_kpp_thailand_consensus)
+d2_phylo <- as.phylo(d2_kpp_thailand_consensus)
+d1_phylo <- as.phylo(d1_kpp_thailand_consensus)
+```
+
+#Source Genotype CLuster Function
+```{r}
+source("script/clean/helper_scripts/helper_genotype_cluster.R")
+```
+
+#Source MCC Tree Prep Function 
+```{r}
+source("script/clean/helper_scripts/helper_tree_prep.R")
+```
+
+#Source Tree Graph Function
+```{r}
+source("script/clean/helper_scripts/helper_plot_tree.R")
+```
+
+#FINAL HPD PLOT FOR TREES ALL MCC 
+```{r}
+prep_d1 <- fc_tree_prep(d1_kpp_thailand_consensus)
+prep_d2 <- fc_tree_prep(d2_kpp_thailand_consensus)
+prep_d3 <- fc_tree_prep(d3_kpp_thailand_consensus)
+prep_d4 <- fc_tree_prep(d4_kpp_thailand_consensus)
+
+p_d1 <- fc_plot_tree(prep_d1$tree, prep_d1$high_nodes, "Serotype 1")
+p_d2 <- fc_plot_tree(prep_d2$tree, prep_d2$high_nodes, "Serotype 2")
+p_d3 <- fc_plot_tree(prep_d3$tree, prep_d3$high_nodes, "Serotype 3")
+p_d4 <- fc_plot_tree(prep_d4$tree, prep_d4$high_nodes, "Serotype 4")
+
+print(p_d1)
+print(p_d2)
+print(p_d3)
+print(p_d4)
+```
+
+##############################
+
+#CLUSTER for DENV3
+```{r}
+d3_genotype_df <- fc_genotype_cluster(d3_phylo) %>%
+  mutate(genotype = recode(genotype,
+                           G1 = "Clade A",
+                           G2 = "Clade B"))
+
+d3_tree <- ggtree(d3_phylo,
+            mrsd       = "2019-12-31",                
+            xlimDates  = c("1994-01-01", "2019-12-31"), 
+            size       = 0.3) %<+% d3_genotype_df +
+  geom_tippoint(aes(color = genotype), size = 2) +
+  theme_tree2() +
+  xlab("Sampling Year") +                     
+  scale_color_brewer(
+    name    = "Genotype Cluster",
+    palette = "Set1",
+    labels  = c("Clade A", "Clade B")
+  ) +
+  labs(title = "DENV-3 Phylogeny") +
+  theme(
+    plot.title   = element_text(hjust = 0.5, face = "bold"),
+    legend.title = element_text(face = "bold")
+  )
+
+print(d3_tree)
+```
+
+#CLUSTER for DENV2
+```{r}
+d2_genotype_df <- fc_genotype_cluster(d2_phylo, k = 2) %>%
+  mutate(genotype = recode(genotype,
+                           G1 = "Clade A",
+                           G2 = "Clade B"))
+d2_tree <- ggtree(d2_phylo,
+                  mrsd      = "2019-12-31",                 # 
+                  xlimDates = c("1994-01-01", "2019-12-31"), # 
+                  size      = 0.3) %<+% d2_genotype_df +
+  geom_tippoint(aes(color = genotype), size = 2) +
+  theme_tree2() +
+  xlab("Sampling Year") +                       
+  scale_color_brewer(
+    name    = "Genotype Cluster",
+    palette = "Set1",
+    labels  = c("Clade A", "Clade B")
+  ) +
+  labs(title = "DENV-2 Phylogeny") +
+  theme(
+    plot.title   = element_text(hjust = 0.5, face = "bold"),
+    legend.title = element_text(face = "bold")
+  )
+
+print(d2_tree)
+
+```
+
+#CLUSTER for DENV1
+```{r}
+d1_genotype_df <- fc_genotype_cluster(d1_phylo, k = 2) %>%
+  mutate(genotype = recode(genotype,
+                           G1 = "Clade A",
+                           G2 = "Clade B"))
+
+d1_tree <- ggtree(d1_phylo,
+                  mrsd      = "2019-12-31",                 # 
+                  xlimDates = c("1994-01-01", "2019-12-31"), # 
+                  size      = 0.3) %<+% d1_genotype_df +
+  geom_tippoint(aes(color = genotype), size = 2) +
+  theme_tree2() +
+  xlab("Sampling Year") +                 
+  scale_color_brewer(
+    name    = "Genotype Cluster",
+    palette = "Set1",
+    labels  = c("Clade A", "Clade B")
+  ) +
+  labs(title = "DENV-1 Phylogeny") +
+  theme(
+    plot.title   = element_text(hjust = 0.5, face = "bold"),
+    legend.title = element_text(face = "bold")
+  )
+
+print(d1_tree)
+```

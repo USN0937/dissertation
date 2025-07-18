@@ -1,0 +1,437 @@
+---
+title: "mrca_relative_risk"
+author: 
+date: "`r Sys.Date()`"
+output: html_document
+---
+#Load packages 
+```{r}
+library(librarian)
+shelf(dplyr)
+shelf(tidyr)
+shelf(ggplot2)  
+```
+
+#Load helper function 
+```{r}
+source("script/clean/helper_scripts/helper_mrca_risk.R")
+```
+
+#Bin the data frame by the MRCA and spatial groups 
+
+#purpose of function = takes four counts
+#Continuity‐corrected proportions
+```{r}
+df_binned3 <- all_data_df %>%
+  filter(!is.na(spatial_dist), !is.na(mrca_age)) %>%
+  mutate(
+    mrca_bin = cut(
+      mrca_age,
+      breaks = c(0.0, 0.5, 2.0, 5.0, 10.0),
+      labels = c("<0.5", "0.5–2", "2–5", "5–10"),
+      right = TRUE,
+      include.lowest = TRUE
+    ),
+    spatial_bin = cut(
+      spatial_dist,
+      breaks = c(0.0, 0.5, 10.0, Inf),
+      labels = c("<0.5 km", "0.5–10 km", ">10 km"),
+      right = TRUE,
+      include.lowest = TRUE
+    )
+  ) %>%
+  filter(!is.na(mrca_bin), !is.na(spatial_bin))
+
+print(table(df_binned3$spatial_bin, df_binned3$mrca_bin))
+
+as.data.frame(table(df_binned3$spatial_bin, df_binned3$mrca_bin)) %>%
+  rename(spatial_bin = Var1, mrca_bin = Var2, n = Freq) %>%
+  arrange(spatial_bin, mrca_bin) %>%
+  print()
+
+```
+
+#Make a big count data frame 
+```{r}
+count_df3 <- df_binned3 %>%
+  group_by(spatial_bin, mrca_bin) %>%
+  summarise(n = n(), .groups = "drop")
+
+all_grid3 <- expand.grid(
+  spatial_bin = levels(df_binned3$spatial_bin),
+  mrca_bin    = levels(df_binned3$mrca_bin),
+  stringsAsFactors = FALSE
+) %>% as_tibble()
+
+count_df_full3 <- all_grid3 %>%
+  left_join(count_df3, by = c("spatial_bin", "mrca_bin")) %>%
+  mutate(n = ifelse(is.na(n), 0L, n))
+
+count_df_full3 %>%
+  arrange(spatial_bin, mrca_bin) %>%
+  print()
+```
+
+#Make a total by spatial distance bin
+#Make a reference >10 km bin
+```{r}
+totals_by_spatial3 <- count_df_full3 %>%
+  group_by(spatial_bin) %>%
+  summarise(total_in_spatial = sum(n), .groups = "drop")
+
+ref_total3 <- totals_by_spatial3 %>%
+  filter(spatial_bin == ">10 km") %>%
+  pull(total_in_spatial)
+
+if (length(ref_total3) == 0 || ref_total3 == 0) {
+  stop("ERROR: There are no >10 km pairs => no reference data. Aborting.")
+}
+```
+
+#Make a big count table 
+```{r}
+rr_prep_base3 <- count_df_full3 %>%
+  left_join(totals_by_spatial3, by = "spatial_bin") %>%
+  select(spatial_bin, mrca_bin, n, total_in_spatial)
+
+ref_counts3 <- rr_prep_base3 %>%
+  filter(spatial_bin == ">10 km") %>%
+  select(mrca_bin, n_ref = n)
+
+rr_prep3 <- rr_prep_base3 %>%
+  left_join(ref_counts3, by = "mrca_bin") %>%
+  mutate(
+    n_ref    = ifelse(is.na(n_ref), 0L, n_ref),
+    total_ref = ref_total3
+  ) %>%
+  mutate(
+    p_s   = ifelse(total_in_spatial == 0, 0, n / total_in_spatial),
+    p_ref = ifelse(total_ref         == 0, 0, n_ref / total_ref)
+  )
+rr_prep3 %>%
+  arrange(spatial_bin, mrca_bin) %>%
+  print()
+```
+
+```{r}
+rr_results3 <- rr_prep3 %>%
+  rowwise() %>%
+  mutate(
+    ci_vals = list(compute_rr_ci(n, total_in_spatial, n_ref, total_ref))
+  ) %>%
+  unnest_wider(ci_vals) %>%
+  ungroup()
+
+final_rr3 <- rr_results3 %>%
+  select(
+    spatial_bin,
+    mrca_bin,
+    n_S_W       = n,
+    total_S     = total_in_spatial,
+    n_ref_W     = n_ref,
+    total_ref,
+    p_s,
+    p_ref,
+    RR,       
+    CI_lower,  
+    CI_upper  
+  ) %>%
+  arrange(spatial_bin, mrca_bin)
+
+rr_unadj3 <- rr_prep3 %>%
+  rowwise() %>%
+  mutate(
+    ci_unadj_vals = list(compute_rr_ci(n, total_in_spatial, n_ref, total_ref))
+  ) %>%
+  unnest_wider(ci_unadj_vals) %>%
+  ungroup() %>%
+  rename(
+    RR_unadj       = RR,
+    CI_lower_unadj = CI_lower,
+    CI_upper_unadj = CI_upper
+  ) %>%
+  select(spatial_bin, mrca_bin, RR_unadj, CI_lower_unadj, CI_upper_unadj)
+
+final_rr_with_unadj3 <- final_rr3 %>%
+  left_join(rr_unadj3, by = c("spatial_bin", "mrca_bin"))
+```
+
+#graph of the plot: UNADJUSTED
+```{r}
+plot_unadj3_df <- final_rr_with_unadj3 %>%
+  mutate(
+    spatial_bin = factor(
+      spatial_bin,
+      levels = c("<0.5 km", "0.5–10 km", ">10 km"),
+      labels = c("<0.5", "0.5–10", ">10")
+    ),
+    facet_label = factor(
+      mrca_bin,
+      levels = c("<0.5", "0.5–2", "2–5", "5–10"),
+      labels = c(
+        "(A) MRCA < 6 months",
+        "(B) MRCA 6 months–2 years",
+        "(C) MRCA 2–5 years",
+        "(D) MRCA 5–10 years"
+      )
+    ),
+    is_ref = (as.character(spatial_bin) == ">10")
+  )
+
+ggplot(plot_unadj3_df, aes(x = spatial_bin, y = RR_unadj, color = is_ref)) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "gray50") +
+  geom_errorbar(
+    aes(ymin = CI_lower_unadj, ymax = CI_upper_unadj),
+    width = 0.25, size = 0.6, na.rm = TRUE
+  ) +
+  geom_point(shape = 15, size = 3, na.rm = TRUE) +
+  scale_y_log10(
+    limits = c(0.01, 100),
+    breaks = c(0.01, 0.1, 1, 10, 100),
+    labels = c("0.01", "0.1", "1", "10", "100")
+  ) +
+  scale_color_manual(
+    values = c("FALSE" = "black", "TRUE" = "red"),
+    guide = FALSE
+  ) +
+  facet_wrap(~ facet_label, nrow = 2, ncol = 2, scales = "fixed") +
+  labs(
+    x = "Spatial distance (km)", 
+    y = "Relative Risk"
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    panel.grid.minor    = element_blank(),
+    panel.grid.major    = element_line(color = "gray85"),
+    axis.text.x         = element_text(angle = 0, hjust = 0.5, vjust = 1),
+    axis.title.x        = element_text(margin = margin(t = 8)), 
+    strip.text          = element_text(face = "bold", size = 12, hjust = 0),
+    plot.margin         = margin(8, 8, 8, 8)
+  )
+
+```
+
+```{r}
+ggplot(plot_unadj3_df, aes(x = spatial_bin, y = RR_unadj, color = is_ref)) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "gray50") +
+  geom_errorbar(
+    aes(ymin = CI_lower_unadj, ymax = CI_upper_unadj),
+    width = 0.25, size = 0.6, na.rm = TRUE
+  ) +
+  geom_point(shape = 15, size = 3, na.rm = TRUE) +
+  scale_y_log10(
+    limits = c(0.01, 100),
+    breaks = c(0.01, 0.1, 1, 10, 100),
+    labels = c("0.01", "0.1", "1", "10", "100")
+  ) +
+  scale_color_manual(
+    values = c("FALSE" = "black", "TRUE" = "red"),
+    guide = FALSE
+  ) +
+  facet_wrap(~ facet_label, nrow = 2, ncol = 2, scales = "fixed") +
+  labs(
+    x = "Spatial distance (km)", 
+    y = "Relative Risk"
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    panel.grid.major = element_blank(),  # remove major gridlines
+    panel.grid.minor = element_blank(),  # remove minor gridlines
+    axis.text.x      = element_text(angle = 0, hjust = 0.5, vjust = 1),
+    axis.title.x     = element_text(margin = margin(t = 8)), 
+    strip.text       = element_text(face = "bold", size = 12, hjust = 0),
+    plot.margin      = margin(8, 8, 8, 8)
+  )
+
+```
+
+
+```{r}
+library(dplyr)
+
+rr_numbers <- final_rr_with_unadj3 %>%
+  arrange(mrca_bin, spatial_bin) %>%
+  select(
+    MRCA       = mrca_bin,
+    Spatial    = spatial_bin,
+    RR_adj     = RR,
+    CI_low     = CI_lower,
+    CI_high    = CI_upper
+  )
+
+print(rr_numbers)
+```
+
+
+
+#Make bins with rolling windows instead
+```{r}
+window_starts <- seq(0, 9, by = 1)
+
+time_to_mixing_list <- lapply(window_starts, function(t0) {
+  df_win <- df_binned3 %>%
+    filter(mrca_age >= t0, mrca_age < (t0 + 1))
+  
+  count_win <- df_win %>%
+    group_by(spatial_bin) %>%
+    summarise(n_SW = n(), .groups = "drop")
+  
+  merged <- totals_by_spatial3 %>%
+    left_join(count_win, by = "spatial_bin") %>%
+    mutate(
+      n_SW = ifelse(is.na(n_SW), 0L, n_SW),     
+      n_S  = total_in_spatial                  
+    )
+  
+  n_ref_W <- count_win %>%
+    filter(spatial_bin == ">10 km") %>%
+    pull(n_SW)
+  if (length(n_ref_W) == 0) {
+    n_ref_W <- 0L
+  }
+  
+  merged <- merged %>%
+    mutate(
+      n_ref_W   = n_ref_W,      
+      total_ref = ref_total3     
+    )
+  
+  merged <- merged %>%
+    rowwise() %>%
+    mutate(
+      ci_out = list(compute_rr_ci(n_SW, n_S, n_ref_W, total_ref))
+    ) %>%
+    unnest_wider(ci_out) %>% 
+    ungroup()
+  
+  merged <- merged %>%
+    mutate(window_start = t0)
+  
+  return(merged)
+})
+
+df_time_mixing <- bind_rows(time_to_mixing_list)
+```
+
+
+#Plot the rolling window graph 
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+window_starts <- seq(0, 9, by = 1)
+
+time_to_mixing_list <- lapply(window_starts, function(t0) {
+  df_win <- df_binned3 %>%
+    filter(mrca_age >= t0, mrca_age < (t0 + 1))
+  
+  count_win <- df_win %>%
+    group_by(spatial_bin) %>%
+    summarise(n_SW = n(), .groups = "drop")
+  
+  merged <- totals_by_spatial3 %>%
+    left_join(count_win, by = "spatial_bin") %>%
+    mutate(
+      n_SW = ifelse(is.na(n_SW), 0L, n_SW),     
+      n_S  = total_in_spatial                  
+    )
+  
+  n_ref_W <- count_win %>%
+    filter(spatial_bin == ">10 km") %>%
+    pull(n_SW)
+  if (length(n_ref_W) == 0) {
+    n_ref_W <- 0L
+  }
+  
+  merged <- merged %>%
+    mutate(
+      n_ref_W   = n_ref_W,      
+      total_ref = ref_total3     
+    )
+  
+  merged <- merged %>%
+    rowwise() %>%
+    mutate(
+      ci_out = list(compute_rr_ci(n_SW, n_S, n_ref_W, total_ref))
+    ) %>%
+    unnest_wider(ci_out) %>% 
+    ungroup()
+  
+  merged <- merged %>%
+    mutate(
+      window_start = t0,
+      window_mid   = t0 + 0.5,
+      spatial_lbl  = spatial_bin
+    )
+  
+  return(merged)
+})
+
+df_time_mixing <- bind_rows(time_to_mixing_list)
+
+ggplot(df_time_mixing, 
+       aes(x = window_mid, y = RR, 
+           color = spatial_lbl, linetype = spatial_lbl)) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "gray50", size = 0.5) +
+  geom_errorbar(
+    aes(ymin = CI_lower, ymax = CI_upper),
+    width = 0.1, size = 0.6, alpha = 0.8, show.legend = FALSE
+  ) +
+  geom_line(size = 1.2) +
+  geom_point(size = 2.5, shape = 16, stroke = 0.8, fill = "white") +
+  scale_y_log10(
+    limits = c(0.01, 100),
+    breaks = c(0.01, 0.1, 1, 10, 100),
+    labels = c("0.01", "0.1", "1", "10", "100")
+  ) +
+  scale_x_continuous(
+    breaks = seq(0, 9, by = 1),
+    labels = paste0(seq(0, 9, by = 1), "–", seq(1, 10, by = 1)),
+    expand = expansion(add = c(0.2, 0.2))  
+  ) +
+  scale_color_manual(
+    name = "Distance bin",
+    values = c(
+      "<0.5 km"   = "#1b9e77", 
+      "0.5–10 km" = "#d95f02",  
+      ">10 km"    = "#7570b3"   
+    )
+  ) +
+  scale_linetype_manual(
+    name = "Distance bin",
+    values = c(
+      "<0.5 km"   = "solid",  
+      "0.5–10 km" = "dashed",   
+      ">10 km"    = "dotted"     
+    )
+  ) +
+  labs(
+    x        = "MRCA (Years)",
+    y        = "Relative Risk"
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(
+      face = "bold", size = 16, margin = margin(b = 4),
+      hjust = 0.5
+    ),
+    plot.subtitle = element_text(
+      size = 12, face = "italic", margin = margin(b = 12),
+      hjust = 0.5
+    ),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_line(color = "gray85", size = 0.5),
+    axis.text.x  = element_text(size = 12, angle = 0, hjust = 0.5),
+    axis.text.y  = element_text(size = 12),
+    axis.title.x = element_text(size = 14, margin = margin(t = 8)),
+    axis.title.y = element_text(size = 14, margin = margin(r = 8)),
+    legend.position    = "top",
+    legend.title       = element_text(size = 13, face = "bold"),
+    legend.text        = element_text(size = 12),
+    legend.key.width   = unit(2, "lines"),
+    plot.margin        = margin(t = 8, r = 8, b = 8, l = 8)
+  )
+
+```
+
